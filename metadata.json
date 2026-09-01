@@ -1,0 +1,6 @@
+{
+  "name": "Aplikasi Penilaian PJOK Kelas X - Kebugaran Jasmani",
+  "description": "Aplikasi Penilaian Praktik Kebugaran Jasmani Kelas X SMA Negeri 1 Tejakula dengan Stopwatch Digital, Penilaian Otomatis, Rekap Kelas, Cetak Lembar Penilaian, dan Ekspor Excel",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
