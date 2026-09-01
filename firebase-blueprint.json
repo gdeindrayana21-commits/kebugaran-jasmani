@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PJOK Fitness Assessment Database Blueprint",
+  "entities": {
+    "AssessmentRecord": {
+      "collection": "assessment_records",
+      "description": "Hasil penilaian kebugaran jasmani 6 item tes per siswa",
+      "fields": {
+        "id": { "type": "string", "description": "Unique record identifier" },
+        "timestamp": { "type": "string", "description": "ISO timestamp record creation" },
+        "student": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "studentClass": { "type": "string" },
+            "attendanceNumber": { "type": "string" },
+            "gender": { "type": "string" },
+            "examinerName": { "type": "string" },
+            "testDate": { "type": "string" }
+          }
+        },
+        "tests": {
+          "type": "object",
+          "description": "Data 6 item tes kebugaran jasmani"
+        },
+        "totalScore": { "type": "number", "description": "Total skor akumulasi 6 tes (0-600)" },
+        "finalScore": { "type": "number", "description": "Nilai akhir rata-rata (0-100)" },
+        "predicate": { "type": "string", "description": "Predikat kelulusan kebugaran" },
+        "notes": { "type": "string", "description": "Catatan evaluasi penilai / guru" },
+        "updatedAt": { "type": "string", "description": "Waktu pembaruan terakhir" }
+      }
+    },
+    "BenchmarksConfig": {
+      "collection": "benchmarks_config",
+      "description": "Konfigurasi rentang konversi repetisi ke skor untuk 6 tes",
+      "fields": {
+        "id": { "type": "string" },
+        "config": { "type": "object" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "LiveSession": {
+      "collection": "active_live_sessions",
+      "description": "Sesi input nilai real-time siswa / guru di lapangan",
+      "fields": {
+        "id": { "type": "string" },
+        "studentName": { "type": "string" },
+        "studentClass": { "type": "string" },
+        "currentTest": { "type": "string" },
+        "currentReps": { "type": "number" },
+        "updatedAt": { "type": "string" }
+      }
+    }
+  }
+}

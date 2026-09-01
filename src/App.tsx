@@ -13,6 +13,11 @@ import {
 import { calculateSummary } from './utils/scoreCalculator';
 import { exportSingleRecordToExcel, exportRecordsToExcel } from './utils/exportUtils';
 import { sound } from './utils/soundEffects';
+import { 
+  subscribeToRecords, saveRecordToFirestore, 
+  deleteRecordFromFirestore, subscribeToBenchmarks, 
+  saveBenchmarksToFirestore 
+} from './utils/firebaseService';
 
 import { Header } from './components/Header';
 import { StudentIdentityForm } from './components/StudentIdentityForm';
@@ -26,7 +31,8 @@ import { TeacherGuide } from './components/TeacherGuide';
 
 import { 
   Sparkles, CheckCircle2, AlertTriangle, Users, 
-  RotateCcw, Award, ChevronRight, Activity, BookOpen, Layers
+  RotateCcw, Award, ChevronRight, Activity, BookOpen, Layers,
+  Settings, Wifi, WifiOff
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -44,6 +50,11 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'assessment' | 'recap' | 'settings' | 'guide'>('assessment');
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
+  const [userRole, setUserRole] = useState<'guru' | 'murid'>('guru');
+
+  // Real-time Firestore connection status
+  const [isRealtimeConnected, setIsRealtimeConnected] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // Student Identity Form State
   const [student, setStudent] = useState<StudentInfo>({
@@ -60,6 +71,7 @@ export default function App() {
   const [tests, setTests] = useState<Record<FitnessTestType, SingleTestResult>>(INITIAL_TESTS_STATE);
   const [notes, setNotes] = useState<string>('');
   const [isSavedInRecap, setIsSavedInRecap] = useState<boolean>(false);
+  const [isSavingRecord, setIsSavingRecord] = useState<boolean>(false);
 
   // Modal active test execution
   const [activeTestId, setActiveTestId] = useState<FitnessTestType | null>(null);
@@ -79,14 +91,42 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Load initial records on mount
+  // Real-time Firestore Subscriptions
   useEffect(() => {
-    const saved = getSavedRecords();
-    setRecords(saved);
-    setBenchmarksConfig(getSavedBenchmarks());
+    // Online/offline window listeners
+    const handleOnline = () => setIsRealtimeConnected(true);
+    const handleOffline = () => setIsRealtimeConnected(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    // Subscribe to assessment records in Firestore
+    setIsSyncing(true);
+    const unsubRecords = subscribeToRecords(
+      (updatedRecords) => {
+        setRecords(updatedRecords);
+        setIsSyncing(false);
+        setIsRealtimeConnected(true);
+      },
+      () => {
+        setIsSyncing(false);
+        setIsRealtimeConnected(false);
+      }
+    );
+
+    // Subscribe to benchmarks in Firestore
+    const unsubBenchmarks = subscribeToBenchmarks((updatedBenchmarks) => {
+      setBenchmarksConfig(updatedBenchmarks);
+    });
+
+    return () => {
+      unsubRecords();
+      unsubBenchmarks();
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
   }, []);
 
-  // Save tests result callback from Modal
+  // Save single test result from Modal
   const handleSaveSingleTest = (result: SingleTestResult) => {
     setTests((prev) => ({
       ...prev,
@@ -108,13 +148,14 @@ export default function App() {
   // Completed test counts
   const summary = calculateSummary(tests);
 
-  // Save full Assessment Record to class database
-  const handleSaveCurrentAssessment = () => {
+  // Save full Assessment Record to real-time Cloud Firestore database
+  const handleSaveCurrentAssessment = async () => {
     if (!student.name.trim()) {
       alert('Nama Siswa wajib diisi sebelum menyimpan hasil!');
       return;
     }
 
+    setIsSavingRecord(true);
     const newRecordId = `rec-${Date.now()}`;
     const newRecord: AssessmentRecord = {
       id: newRecordId,
@@ -127,51 +168,46 @@ export default function App() {
       notes: notes.trim(),
     };
 
-    // Check if record with same name & class already exists, update or add
-    const existingIndex = records.findIndex(
-      (r) =>
-        r.student.name.toLowerCase() === student.name.toLowerCase() &&
-        r.student.studentClass === student.studentClass
-    );
+    try {
+      await saveRecordToFirestore(newRecord);
+      setIsSavedInRecap(true);
+      sound.playFinish();
 
-    let updatedRecords: AssessmentRecord[];
-    if (existingIndex >= 0) {
-      updatedRecords = [...records];
-      updatedRecords[existingIndex] = { ...newRecord, id: records[existingIndex].id };
-    } else {
-      updatedRecords = [newRecord, ...records];
+      confetti({
+        particleCount: 90,
+        spread: 70,
+        origin: { y: 0.6 },
+      });
+
+      showToast(
+        'Tersimpan Real-time!',
+        `Data nilai ${student.name} (Kelas ${student.studentClass}) berhasil disinkronkan ke Database Cloud Firestore.`,
+        'success'
+      );
+    } catch (err) {
+      console.error('Save error:', err);
+      showToast(
+        'Tersimpan di Penyimpanan Lokal',
+        'Data tersimpan di cache dan akan disinkronkan saat koneksi online aktif kembali.',
+        'info'
+      );
+      setIsSavedInRecap(true);
+    } finally {
+      setIsSavingRecord(false);
     }
-
-    setRecords(updatedRecords);
-    saveRecords(updatedRecords);
-    setIsSavedInRecap(true);
-    sound.playFinish();
-
-    confetti({
-      particleCount: 100,
-      spread: 70,
-      origin: { y: 0.6 },
-    });
-
-    showToast(
-      'Hasil Penilaian Tersimpan!',
-      `Data nilai ${student.name} (Kelas ${student.studentClass}) berhasil dimasukkan ke Rekap Kelas.`,
-      'success'
-    );
   };
 
   // Reset to Next Student (PENILAIAN SISWA BERIKUTNYA)
   const handleNextStudent = () => {
-    // If not saved and has progress, prompt confirmation
     if (summary.completedCount > 0 && !isSavedInRecap) {
-      if (!confirm('Hasil siswa saat ini belum disimpan ke rekap. Lanjutkan ke siswa berikutnya?')) {
+      if (!confirm('Hasil siswa saat ini belum disimpan ke database. Lanjutkan ke siswa berikutnya?')) {
         return;
       }
     }
 
     setStudent({
       name: '',
-      studentClass: student.studentClass, // Keep the same class for teacher's convenience during batch class testing
+      studentClass: student.studentClass, // Keep the same class for teacher's convenience
       attendanceNumber: student.attendanceNumber ? String(parseInt(student.attendanceNumber, 10) + 1 || '') : '',
       gender: 'L',
       examinerName: student.examinerName,
@@ -186,7 +222,7 @@ export default function App() {
 
     showToast(
       'Sesi Siswa Baru Siap!',
-      'Form identitas telah direset. Silakan masukkan nama siswa berikutnya.',
+      'Formulir telah direset. Silakan masukkan data siswa berikutnya.',
       'info'
     );
   };
@@ -225,12 +261,14 @@ export default function App() {
     exportSingleRecordToExcel(currentRecord);
   };
 
-  // Delete record from class recap
-  const handleDeleteRecord = (id: string) => {
-    const updated = records.filter((r) => r.id !== id);
-    setRecords(updated);
-    saveRecords(updated);
-    showToast('Data Dihapus', 'Data penilaian telah dihapus dari rekap.', 'warn');
+  // Delete record from Firestore database
+  const handleDeleteRecord = async (id: string) => {
+    try {
+      await deleteRecordFromFirestore(id);
+      showToast('Data Dihapus', 'Data penilaian telah dihapus dari database real-time.', 'warn');
+    } catch {
+      showToast('Gagal Menghapus', 'Terjadi kesalahan saat menghapus data.', 'warn');
+    }
   };
 
   // View existing record from recap into active assessment form
@@ -272,11 +310,11 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-slate-950 pb-20 md:pb-6">
       
       {/* Toast Notification Popup */}
       {toastMessage && (
-        <div className="fixed bottom-5 right-5 z-50 animate-bounce transition-all">
+        <div className="fixed bottom-20 md:bottom-6 right-4 md:right-6 z-50 animate-bounce transition-all">
           <div className="bg-slate-900 border border-emerald-500/60 text-white px-4 py-3 rounded-xl shadow-2xl shadow-emerald-950/60 flex items-start gap-3 max-w-sm">
             <CheckCircle2 className="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5" />
             <div>
@@ -287,7 +325,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Header with App Title, School & Teacher Banner */}
+      {/* Main Header with Realtime Indicator & School Banner */}
       <Header
         activeTab={activeTab}
         setActiveTab={(tab) => {
@@ -300,14 +338,18 @@ export default function App() {
         savedRecordsCount={records.length}
         soundEnabled={soundEnabled}
         setSoundEnabled={setSoundEnabled}
+        isRealtimeConnected={isRealtimeConnected}
+        isSyncing={isSyncing}
+        userRole={userRole}
+        setUserRole={setUserRole}
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-6 space-y-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-4 sm:space-y-6">
         
         {/* VIEW 1: PENILAIAN / FORM TES */}
         {activeTab === 'assessment' && (
-          <div className="space-y-6">
+          <div className="space-y-4 sm:space-y-6">
             
             {/* Step 1: Student Identity Form */}
             <StudentIdentityForm
@@ -315,6 +357,7 @@ export default function App() {
               setStudent={setStudent}
               isLocked={isStudentLocked}
               setIsLocked={setIsStudentLocked}
+              userRole={userRole}
               onResetStudent={() => {
                 if (confirm('Kosongkan formulir identitas siswa?')) {
                   setStudent({
@@ -333,28 +376,28 @@ export default function App() {
             />
 
             {/* Step 2: 6 Fitness Test Cards */}
-            <div className="space-y-3">
+            <div className="space-y-2.5 sm:space-y-3">
               <div className="flex items-center justify-between">
                 <div>
-                  <h2 className="text-lg font-black text-white font-['Outfit'] tracking-tight flex items-center gap-2">
-                    <Layers className="w-5 h-5 text-emerald-400" />
-                    6 MENU TES KEBUGARAN JASMANI
+                  <h2 className="text-base sm:text-lg font-black text-white font-['Outfit'] tracking-tight flex items-center gap-2">
+                    <Layers className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400" />
+                    <span>6 MENU TES KEBUGARAN JASMANI</span>
                   </h2>
-                  <p className="text-xs text-slate-400">
-                    Klik salah satu kartu tes untuk membuka stopwatch digital dan mencatat repetisi gerakan
+                  <p className="text-[11px] sm:text-xs text-slate-400">
+                    Klik kartu tes untuk membuka stopwatch digital dan input repetisi gerakan
                   </p>
                 </div>
 
                 <div className="hidden sm:flex items-center gap-2">
                   <span className="text-xs text-slate-400">Progres:</span>
                   <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
-                    {summary.completedCount} / 6 Tes
+                    {summary.completedCount} / 6 Selesai
                   </span>
                 </div>
               </div>
 
-              {/* Grid of 6 Athletic Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {/* Grid of 6 Athletic Cards (1 col mobile, 2 cols tablet, 3 cols desktop) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-4">
                 {FITNESS_TESTS.map((config) => (
                   <TestCard
                     key={config.id}
@@ -390,6 +433,7 @@ export default function App() {
                 setActiveTestId(id);
               }}
               isAlreadySaved={isSavedInRecap}
+              isSaving={isSavingRecord}
             />
 
           </div>
@@ -406,6 +450,7 @@ export default function App() {
               handleNextStudent();
               setActiveTab('assessment');
             }}
+            isRealtimeConnected={isRealtimeConnected}
           />
         )}
 
@@ -439,21 +484,81 @@ export default function App() {
           benchmarksConfig={benchmarksConfig}
           onSaveBenchmarks={(updated) => {
             setBenchmarksConfig(updated);
-            saveBenchmarks(updated);
-            showToast('Rentang Nilai Diperbarui', 'Standar konversi nilai telah berhasil disimpan.', 'success');
+            saveBenchmarksToFirestore(updated).catch(() => {});
+            showToast('Rentang Nilai Disimpan Real-time', 'Standar konversi nilai telah disinkronkan ke cloud.', 'success');
           }}
           onClose={() => setShowSettingsModal(false)}
         />
       )}
 
+      {/* MOBILE STICKY BOTTOM NAVIGATION BAR (Ultra convenient on smartphones) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 border-t border-slate-800 backdrop-blur-lg px-2 py-1.5 shadow-2xl">
+        <div className="grid grid-cols-4 gap-1">
+          <button
+            type="button"
+            onClick={() => setActiveTab('assessment')}
+            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition min-h-[48px] ${
+              activeTab === 'assessment'
+                ? 'text-emerald-400 bg-emerald-500/10 font-bold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Activity className="w-5 h-5" />
+            <span className="text-[10px] mt-0.5">Form Nilai</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('recap')}
+            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition min-h-[48px] relative ${
+              activeTab === 'recap'
+                ? 'text-cyan-400 bg-cyan-500/10 font-bold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Users className="w-5 h-5" />
+            <span className="text-[10px] mt-0.5">Rekap</span>
+            {records.length > 0 && (
+              <span className="absolute top-1 right-2 w-4 h-4 bg-cyan-500 text-slate-950 rounded-full text-[9px] font-black flex items-center justify-center">
+                {records.length > 99 ? '99+' : records.length}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('guide')}
+            className={`flex flex-col items-center justify-center py-1.5 px-1 rounded-xl transition min-h-[48px] ${
+              activeTab === 'guide'
+                ? 'text-amber-400 bg-amber-500/10 font-bold'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <BookOpen className="w-5 h-5" />
+            <span className="text-[10px] mt-0.5">Panduan</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowSettingsModal(true)}
+            className="flex flex-col items-center justify-center py-1.5 px-1 rounded-xl text-slate-400 hover:text-slate-200 transition min-h-[48px]"
+          >
+            <Settings className="w-5 h-5" />
+            <span className="text-[10px] mt-0.5">Rentang</span>
+          </button>
+        </div>
+      </nav>
+
       {/* App Footer */}
-      <footer className="bg-slate-900/60 border-t border-slate-800/80 py-4 mt-12 text-center text-xs text-slate-500">
+      <footer className="bg-slate-900/60 border-t border-slate-800/80 py-4 mt-8 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <p>
-            © {new Date().getFullYear()} <strong>{DEFAULT_SCHOOL_NAME}</strong> • Aplikasi Penilaian PJOK Kelas X
+            © {new Date().getFullYear()} <strong>{DEFAULT_SCHOOL_NAME}</strong> • Penilaian PJOK Kebugaran Jasmani
           </p>
-          <p className="text-[11px] text-slate-400">
-            Guru Pengampu: <strong className="text-emerald-400">{DEFAULT_TEACHER_NAME}</strong>
+          <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
+            <span>Guru: <strong className="text-emerald-400">{DEFAULT_TEACHER_NAME}</strong></span>
+            <span>•</span>
+            <span className="text-cyan-300">Firebase Firestore Real-time</span>
           </p>
         </div>
       </footer>

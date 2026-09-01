@@ -1,0 +1,18 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Penilaian Kebugaran Jasmani - Real-time sync untuk siswa dan guru
+    match /assessment_records/{recordId} {
+      allow read, write: if true;
+    }
+    match /benchmarks_config/{configId} {
+      allow read, write: if true;
+    }
+    match /active_live_sessions/{sessionId} {
+      allow read, write: if true;
+    }
+    match /system_settings/{settingId} {
+      allow read, write: if true;
+    }
+  }
+}
