@@ -43,7 +43,6 @@ export const StudentSummaryDashboard: React.FC<StudentSummaryDashboardProps> = (
   isSaving = false,
 }) => {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
 
   const summary = calculateSummary(tests);
   const predicateInfo = getPredicate(summary.finalScore);
@@ -465,7 +464,6 @@ export const StudentSummaryDashboard: React.FC<StudentSummaryDashboardProps> = (
             <div className="pt-2 flex items-center justify-end gap-2.5">
               <button
                 type="button"
-                disabled={isDeleting}
                 onClick={() => setShowDeleteModal(false)}
                 className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer min-h-[38px]"
               >
@@ -474,31 +472,16 @@ export const StudentSummaryDashboard: React.FC<StudentSummaryDashboardProps> = (
               <button
                 id="btn-confirm-delete-student-dashboard"
                 type="button"
-                disabled={isDeleting}
-                onClick={async () => {
-                  setIsDeleting(true);
-                  try {
-                    if (onDeleteCurrentStudent) {
-                      await onDeleteCurrentStudent();
-                    }
-                    setShowDeleteModal(false);
-                  } finally {
-                    setIsDeleting(false);
+                onClick={() => {
+                  setShowDeleteModal(false);
+                  if (onDeleteCurrentStudent) {
+                    onDeleteCurrentStudent();
                   }
                 }}
                 className="px-4 py-2 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white flex items-center gap-1.5 shadow-lg shadow-rose-950/50 transition cursor-pointer min-h-[38px]"
               >
-                {isDeleting ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Menghapus...</span>
-                  </>
-                ) : (
-                  <>
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Ya, Hapus Data Ini</span>
-                  </>
-                )}
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Ya, Hapus Data Ini</span>
               </button>
             </div>
           </div>

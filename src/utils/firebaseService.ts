@@ -1,6 +1,6 @@
 import { 
   collection, doc, setDoc, deleteDoc, onSnapshot, 
-  query, orderBy, getDocs, getDoc, serverTimestamp, writeBatch 
+  query, orderBy, getDocs, getDoc, serverTimestamp, writeBatch, where 
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { AssessmentRecord, ScoreBenchmarksConfig } from '../types';
@@ -167,22 +167,21 @@ export async function saveRecordToFirestore(record: AssessmentRecord): Promise<v
 }
 
 /**
- * Delete an assessment record from Firestore
+ * Delete an assessment record from Firestore and local storage cache
  */
 export async function deleteRecordFromFirestore(recordId: string): Promise<void> {
+  // 1. Immediately update local storage cache & remove from pending sync queue
+  const current = getSavedRecords();
+  const filtered = current.filter((r) => r.id !== recordId);
+  saveRecords(filtered);
+  removePendingSyncRecord(recordId);
+
+  // 2. Perform Firestore delete asynchronously
   try {
     const docRef = doc(db, RECORDS_COLLECTION, recordId);
     await deleteDoc(docRef);
-
-    // Update local cache
-    const current = getSavedRecords();
-    const filtered = current.filter((r) => r.id !== recordId);
-    saveRecords(filtered);
   } catch (err) {
-    console.error('Firestore delete failed, removing locally:', err);
-    const current = getSavedRecords();
-    const filtered = current.filter((r) => r.id !== recordId);
-    saveRecords(filtered);
+    console.error('Firestore delete failed:', err);
     throw err;
   }
 }
@@ -195,7 +194,7 @@ export async function deleteAllRecordsFromFirestore(): Promise<number> {
   saveRecords([]);
   localStorage.removeItem('pjok_pending_sync_queue');
 
-  // 2. Fetch and delete all documents in assessment_records collection via batch
+  // 2. Fetch and delete all documents in assessment_records collection via parallel batch commits
   try {
     const colRef = collection(db, RECORDS_COLLECTION);
     const snap = await getDocs(colRef);
@@ -205,12 +204,14 @@ export async function deleteAllRecordsFromFirestore(): Promise<number> {
 
     const docs = snap.docs;
     const batchSize = 400;
+    const commitPromises: Promise<void>[] = [];
     for (let i = 0; i < docs.length; i += batchSize) {
       const batch = writeBatch(db);
       const chunk = docs.slice(i, i + batchSize);
       chunk.forEach((d) => batch.delete(d.ref));
-      await batch.commit();
+      commitPromises.push(batch.commit());
     }
+    await Promise.all(commitPromises);
     return docs.length;
   } catch (err) {
     console.error('Failed to delete all records from Firestore:', err);
@@ -222,31 +223,38 @@ export async function deleteAllRecordsFromFirestore(): Promise<number> {
  * Delete assessment records by specific Class from Firestore and local cache
  */
 export async function deleteRecordsByClassFromFirestore(studentClass: string): Promise<number> {
-  // 1. Update local cache
+  // 1. Update local cache immediately
   const current = getSavedRecords();
   const kept = current.filter((r) => r.student.studentClass !== studentClass);
   saveRecords(kept);
 
-  // 2. Query and delete from Firestore
+  // 2. Query and delete from Firestore with parallel batch commits
   try {
-    const colRef = collection(db, RECORDS_COLLECTION);
-    const snap = await getDocs(colRef);
-    if (snap.empty) return 0;
-
-    const toDeleteDocs = snap.docs.filter((d) => {
-      const data = d.data();
-      return data && data.student && data.student.studentClass === studentClass;
-    });
+    let toDeleteDocs;
+    try {
+      const q = query(collection(db, RECORDS_COLLECTION), where('student.studentClass', '==', studentClass));
+      const classSnap = await getDocs(q);
+      toDeleteDocs = classSnap.docs;
+    } catch {
+      const colRef = collection(db, RECORDS_COLLECTION);
+      const snap = await getDocs(colRef);
+      toDeleteDocs = snap.docs.filter((d) => {
+        const data = d.data();
+        return data && data.student && data.student.studentClass === studentClass;
+      });
+    }
 
     if (toDeleteDocs.length === 0) return 0;
 
     const batchSize = 400;
+    const commitPromises: Promise<void>[] = [];
     for (let i = 0; i < toDeleteDocs.length; i += batchSize) {
       const batch = writeBatch(db);
       const chunk = toDeleteDocs.slice(i, i + batchSize);
       chunk.forEach((d) => batch.delete(d.ref));
-      await batch.commit();
+      commitPromises.push(batch.commit());
     }
+    await Promise.all(commitPromises);
     return toDeleteDocs.length;
   } catch (err) {
     console.error(`Failed to delete records for class ${studentClass} from Firestore:`, err);
@@ -260,7 +268,7 @@ export async function deleteRecordsByClassFromFirestore(studentClass: string): P
 export async function deleteMultipleRecordsFromFirestore(recordIds: string[]): Promise<number> {
   if (recordIds.length === 0) return 0;
 
-  // 1. Update local cache
+  // 1. Update local cache immediately
   const idSet = new Set(recordIds);
   const current = getSavedRecords();
   const filtered = current.filter((r) => !idSet.has(r.id));
@@ -269,9 +277,10 @@ export async function deleteMultipleRecordsFromFirestore(recordIds: string[]): P
   // Remove from pending sync queue as well
   recordIds.forEach((id) => removePendingSyncRecord(id));
 
-  // 2. Delete from Firestore in batches
+  // 2. Delete from Firestore in parallel batches
   try {
     const batchSize = 400;
+    const commitPromises: Promise<void>[] = [];
     for (let i = 0; i < recordIds.length; i += batchSize) {
       const batch = writeBatch(db);
       const chunk = recordIds.slice(i, i + batchSize);
@@ -279,8 +288,9 @@ export async function deleteMultipleRecordsFromFirestore(recordIds: string[]): P
         const docRef = doc(db, RECORDS_COLLECTION, id);
         batch.delete(docRef);
       });
-      await batch.commit();
+      commitPromises.push(batch.commit());
     }
+    await Promise.all(commitPromises);
     return recordIds.length;
   } catch (err) {
     console.error('Firestore batch delete failed:', err);

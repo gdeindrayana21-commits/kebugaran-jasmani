@@ -422,32 +422,55 @@ export default function App() {
   };
 
   // Delete record from Firestore database (supports consolidated sourceRecordIds)
+  // Delete record from Firestore database (supports consolidated sourceRecordIds) with INSTANT OPTIMISTIC RESPONSE
   const handleDeleteRecord = async (id: string, sourceIds?: string[]) => {
+    // 1. INSTANT OPTIMISTIC UI UPDATE (0ms)
+    const targetIds = sourceIds && sourceIds.length > 0 ? sourceIds : [id];
+    const targetSet = new Set([...targetIds, id]);
+
+    setRecords((prev) =>
+      prev.filter(
+        (r) => !targetSet.has(r.id) && !(r.sourceRecordIds && r.sourceRecordIds.some((sid) => targetSet.has(sid)))
+      )
+    );
+    showToast('Data Dihapus', 'Data penilaian telah dihapus.', 'warn');
+
+    // 2. Asynchronous Firestore deletion in background
     try {
       if (sourceIds && sourceIds.length > 0) {
         await deleteMultipleRecordsFromFirestore(sourceIds);
       } else {
         await deleteRecordFromFirestore(id);
       }
-      showToast('Data Dihapus', 'Data penilaian telah dihapus dari database real-time.', 'warn');
-    } catch {
-      showToast('Gagal Menghapus', 'Terjadi kesalahan saat menghapus data.', 'warn');
+    } catch (err) {
+      console.error('Failed to delete record from Firestore:', err);
+      showToast('Kendala Jaringan Cloud', 'Data dihapus secara lokal, sinkronisasi cloud tertunda.', 'warn');
     }
   };
 
-  // Delete multiple records (bulk delete from checkbox selection)
+  // Delete multiple records (bulk delete from checkbox selection) with INSTANT OPTIMISTIC RESPONSE
   const handleDeleteMultipleRecords = async (ids: string[], allSourceIds?: string[]) => {
+    const targetIds = allSourceIds && allSourceIds.length > 0 ? allSourceIds : ids;
+    const targetSet = new Set([...ids, ...targetIds]);
+
+    // 1. INSTANT OPTIMISTIC UI UPDATE (0ms)
+    setRecords((prev) =>
+      prev.filter(
+        (r) => !targetSet.has(r.id) && !(r.sourceRecordIds && r.sourceRecordIds.some((sid) => targetSet.has(sid)))
+      )
+    );
+    showToast(
+      'Data Terpilih Dihapus',
+      `Sebanyak ${ids.length} data rekapan siswa berhasil dihapus.`,
+      'warn'
+    );
+
+    // 2. Asynchronous Firestore batch deletion in background
     try {
-      const targetIds = allSourceIds && allSourceIds.length > 0 ? allSourceIds : ids;
       await deleteMultipleRecordsFromFirestore(targetIds);
-      setRecords((prev) => prev.filter((r) => !ids.includes(r.id) && !targetIds.includes(r.id)));
-      showToast(
-        'Data Terpilih Dihapus',
-        `Sebanyak ${ids.length} data rekapan siswa berhasil dihapus dari Cloud Firestore.`,
-        'warn'
-      );
-    } catch {
-      showToast('Gagal Menghapus', 'Terjadi kesalahan saat menghapus data terpilih.', 'warn');
+    } catch (err) {
+      console.error('Failed to delete multiple records from Firestore:', err);
+      showToast('Kendala Jaringan Cloud', 'Data dihapus secara lokal, sinkronisasi cloud tertunda.', 'warn');
     }
   };
 
@@ -461,41 +484,48 @@ export default function App() {
             r.student.studentClass === student.studentClass)
       );
 
+      clearActiveDraft();
+      handleNextStudent();
+
       if (existing) {
         await handleDeleteRecord(existing.id, existing.sourceRecordIds);
       } else if (currentRecordId) {
         await handleDeleteRecord(currentRecordId);
       }
-      clearActiveDraft();
-      handleNextStudent();
-    } catch {
+    } catch (err) {
+      console.error('Failed to delete current student:', err);
       showToast('Gagal Menghapus', 'Terjadi kesalahan saat menghapus rekapan siswa.', 'warn');
     }
   };
 
-  // Delete all records or filtered class records from Firestore database
+  // Delete all records or filtered class records from Firestore database with INSTANT OPTIMISTIC RESPONSE
   const handleDeleteAllRecords = async (classFilter?: string) => {
     try {
       if (classFilter && classFilter !== 'ALL') {
-        const count = await deleteRecordsByClassFromFirestore(classFilter);
+        // 1. INSTANT OPTIMISTIC UI UPDATE (0ms)
         setRecords((prev) => prev.filter((r) => r.student.studentClass !== classFilter));
         showToast(
           'Riwayat Kelas Dihapus',
-          `Sebanyak ${count} data penilaian Kelas ${classFilter} berhasil dihapus dari database.`,
+          `Data penilaian Kelas ${classFilter} berhasil dibersihkan.`,
           'info'
         );
+        // 2. Asynchronous Firestore deletion
+        await deleteRecordsByClassFromFirestore(classFilter);
       } else {
-        const count = await deleteAllRecordsFromFirestore();
+        // 1. INSTANT OPTIMISTIC UI UPDATE (0ms)
         setRecords([]);
         clearActiveDraft();
         showToast(
           'Semua Riwayat Dihapus',
-          `Sebanyak ${count} data penilaian telah dihapus dari Cloud Firestore dan penyimpanan lokal.`,
+          'Seluruh data penilaian telah dibersihkan.',
           'info'
         );
+        // 2. Asynchronous Firestore deletion
+        await deleteAllRecordsFromFirestore();
       }
-    } catch {
-      showToast('Gagal Menghapus', 'Terjadi kesalahan saat menghapus data dari Cloud Firestore.', 'warn');
+    } catch (err) {
+      console.error('Failed to delete all records from Firestore:', err);
+      showToast('Kendala Jaringan Cloud', 'Terjadi kendala saat menghapus data di cloud.', 'warn');
     }
   };
 

@@ -46,17 +46,14 @@ export const ClassRecapTable: React.FC<ClassRecapTableProps> = ({
 
   // State untuk Modal Hapus Satu Data Siswa
   const [recordToDelete, setRecordToDelete] = useState<AssessmentRecord | null>(null);
-  const [isDeletingSingle, setIsDeletingSingle] = useState(false);
 
   // State untuk Multi-Select Checkbox & Hapus Terpilih
   const [selectedRecordIds, setSelectedRecordIds] = useState<Set<string>>(new Set());
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
-  const [isDeletingBulk, setIsDeletingBulk] = useState(false);
 
   // State untuk Modal Hapus Semua Riwayat
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<'all' | 'class'>('all');
-  const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [confirmDeleteWord, setConfirmDeleteWord] = useState('');
 
   // Base records: automatically consolidated from the 6 assessors when enabled
@@ -889,7 +886,6 @@ function doPost(e) {
             <div className="pt-2 flex items-center justify-end gap-2.5">
               <button
                 type="button"
-                disabled={isDeletingSingle}
                 onClick={() => setRecordToDelete(null)}
                 className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer min-h-[38px]"
               >
@@ -898,34 +894,23 @@ function doPost(e) {
               <button
                 id="btn-confirm-delete-single"
                 type="button"
-                disabled={isDeletingSingle}
-                onClick={async () => {
-                  setIsDeletingSingle(true);
-                  try {
-                    await onDeleteRecord(recordToDelete.id, recordToDelete.sourceRecordIds);
-                    setSelectedRecordIds((prev) => {
-                      const next = new Set(prev);
-                      next.delete(recordToDelete.id);
-                      return next;
-                    });
-                    setRecordToDelete(null);
-                  } finally {
-                    setIsDeletingSingle(false);
-                  }
+                onClick={() => {
+                  if (!recordToDelete) return;
+                  const rec = recordToDelete;
+                  // Instantly close modal and remove from selection (0ms latency)
+                  setRecordToDelete(null);
+                  setSelectedRecordIds((prev) => {
+                    const next = new Set(prev);
+                    next.delete(rec.id);
+                    return next;
+                  });
+                  // Trigger delete (handled optimistically by App.tsx)
+                  onDeleteRecord(rec.id, rec.sourceRecordIds);
                 }}
                 className="px-4 py-2 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white flex items-center gap-1.5 shadow-lg shadow-rose-950/50 transition cursor-pointer min-h-[38px]"
               >
-                {isDeletingSingle ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Menghapus...</span>
-                  </>
-                ) : (
-                  <>
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Ya, Hapus Data Ini</span>
-                  </>
-                )}
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Ya, Hapus Data Ini</span>
               </button>
             </div>
           </div>
@@ -986,7 +971,6 @@ function doPost(e) {
             <div className="pt-2 flex items-center justify-end gap-2.5">
               <button
                 type="button"
-                disabled={isDeletingBulk}
                 onClick={() => setShowBulkDeleteModal(false)}
                 className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer min-h-[38px]"
               >
@@ -995,47 +979,36 @@ function doPost(e) {
               <button
                 id="btn-confirm-delete-bulk"
                 type="button"
-                disabled={isDeletingBulk}
-                onClick={async () => {
-                  setIsDeletingBulk(true);
-                  try {
-                    const idsArray: string[] = Array.from(selectedRecordIds);
-                    const allSourceIds: string[] = [];
-                    idsArray.forEach((id: string) => {
-                      const rec = baseRecords.find((r) => r.id === id);
-                      if (rec?.sourceRecordIds && rec.sourceRecordIds.length > 0) {
-                        allSourceIds.push(...rec.sourceRecordIds);
-                      } else {
-                        allSourceIds.push(id);
-                      }
-                    });
-
-                    if (onDeleteMultipleRecords) {
-                      await onDeleteMultipleRecords(idsArray, allSourceIds);
+                onClick={() => {
+                  if (selectedRecordIds.size === 0) return;
+                  const idsArray: string[] = Array.from(selectedRecordIds);
+                  const allSourceIds: string[] = [];
+                  idsArray.forEach((id: string) => {
+                    const rec = baseRecords.find((r) => r.id === id);
+                    if (rec?.sourceRecordIds && rec.sourceRecordIds.length > 0) {
+                      allSourceIds.push(...rec.sourceRecordIds);
                     } else {
-                      for (const sid of allSourceIds) {
-                        await onDeleteRecord(sid);
-                      }
+                      allSourceIds.push(id);
                     }
-                    setSelectedRecordIds(new Set());
-                    setShowBulkDeleteModal(false);
-                  } finally {
-                    setIsDeletingBulk(false);
+                  });
+
+                  // Instantly close modal and clear selection (0ms latency)
+                  setShowBulkDeleteModal(false);
+                  setSelectedRecordIds(new Set());
+
+                  // Trigger delete (handled optimistically by App.tsx)
+                  if (onDeleteMultipleRecords) {
+                    onDeleteMultipleRecords(idsArray, allSourceIds);
+                  } else {
+                    for (const sid of allSourceIds) {
+                      onDeleteRecord(sid);
+                    }
                   }
                 }}
                 className="px-4 py-2 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white flex items-center gap-1.5 shadow-lg shadow-rose-950/50 transition cursor-pointer min-h-[38px]"
               >
-                {isDeletingBulk ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Menghapus...</span>
-                  </>
-                ) : (
-                  <>
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Ya, Hapus {selectedRecordIds.size} Siswa Terpilih</span>
-                  </>
-                )}
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Ya, Hapus {selectedRecordIds.size} Siswa Terpilih</span>
               </button>
             </div>
           </div>
@@ -1148,7 +1121,6 @@ function doPost(e) {
             <div className="pt-2 flex items-center justify-end gap-2.5">
               <button
                 type="button"
-                disabled={isDeletingAll}
                 onClick={() => setShowDeleteModal(false)}
                 className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer min-h-[38px]"
               >
@@ -1157,33 +1129,21 @@ function doPost(e) {
               <button
                 id="btn-confirm-delete-all"
                 type="button"
-                disabled={confirmDeleteWord.trim().toUpperCase() !== 'HAPUS' || isDeletingAll}
-                onClick={async () => {
-                  setIsDeletingAll(true);
-                  try {
-                    await onDeleteAllRecords(deleteTarget === 'class' && selectedClass !== 'ALL' ? selectedClass : undefined);
-                    setShowDeleteModal(false);
-                  } finally {
-                    setIsDeletingAll(false);
-                  }
+                disabled={confirmDeleteWord.trim().toUpperCase() !== 'HAPUS'}
+                onClick={() => {
+                  const targetClass = deleteTarget === 'class' && selectedClass !== 'ALL' ? selectedClass : undefined;
+                  setShowDeleteModal(false);
+                  setConfirmDeleteWord('');
+                  onDeleteAllRecords(targetClass);
                 }}
                 className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition min-h-[38px] ${
-                  confirmDeleteWord.trim().toUpperCase() === 'HAPUS' && !isDeletingAll
+                  confirmDeleteWord.trim().toUpperCase() === 'HAPUS'
                     ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-950/50 cursor-pointer'
                     : 'bg-slate-800 text-slate-600 border border-slate-700 cursor-not-allowed'
                 }`}
               >
-                {isDeletingAll ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Menghapus...</span>
-                  </>
-                ) : (
-                  <>
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Ya, Hapus Permanen</span>
-                  </>
-                )}
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Ya, Hapus Permanen</span>
               </button>
             </div>
           </div>
