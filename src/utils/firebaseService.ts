@@ -1,6 +1,6 @@
 import { 
   collection, doc, setDoc, deleteDoc, onSnapshot, 
-  query, orderBy, getDocs, getDoc, serverTimestamp 
+  query, orderBy, getDocs, getDoc, serverTimestamp, writeBatch 
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { AssessmentRecord, ScoreBenchmarksConfig } from '../types';
@@ -183,6 +183,73 @@ export async function deleteRecordFromFirestore(recordId: string): Promise<void>
     const current = getSavedRecords();
     const filtered = current.filter((r) => r.id !== recordId);
     saveRecords(filtered);
+    throw err;
+  }
+}
+
+/**
+ * Delete ALL assessment records from Firestore and local cache
+ */
+export async function deleteAllRecordsFromFirestore(): Promise<number> {
+  // 1. Clear local records and pending sync queue immediately
+  saveRecords([]);
+  localStorage.removeItem('pjok_pending_sync_queue');
+
+  // 2. Fetch and delete all documents in assessment_records collection via batch
+  try {
+    const colRef = collection(db, RECORDS_COLLECTION);
+    const snap = await getDocs(colRef);
+    if (snap.empty) {
+      return 0;
+    }
+
+    const docs = snap.docs;
+    const batchSize = 400;
+    for (let i = 0; i < docs.length; i += batchSize) {
+      const batch = writeBatch(db);
+      const chunk = docs.slice(i, i + batchSize);
+      chunk.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+    return docs.length;
+  } catch (err) {
+    console.error('Failed to delete all records from Firestore:', err);
+    throw err;
+  }
+}
+
+/**
+ * Delete assessment records by specific Class from Firestore and local cache
+ */
+export async function deleteRecordsByClassFromFirestore(studentClass: string): Promise<number> {
+  // 1. Update local cache
+  const current = getSavedRecords();
+  const kept = current.filter((r) => r.student.studentClass !== studentClass);
+  saveRecords(kept);
+
+  // 2. Query and delete from Firestore
+  try {
+    const colRef = collection(db, RECORDS_COLLECTION);
+    const snap = await getDocs(colRef);
+    if (snap.empty) return 0;
+
+    const toDeleteDocs = snap.docs.filter((d) => {
+      const data = d.data();
+      return data && data.student && data.student.studentClass === studentClass;
+    });
+
+    if (toDeleteDocs.length === 0) return 0;
+
+    const batchSize = 400;
+    for (let i = 0; i < toDeleteDocs.length; i += batchSize) {
+      const batch = writeBatch(db);
+      const chunk = toDeleteDocs.slice(i, i + batchSize);
+      chunk.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+    return toDeleteDocs.length;
+  } catch (err) {
+    console.error(`Failed to delete records for class ${studentClass} from Firestore:`, err);
     throw err;
   }
 }

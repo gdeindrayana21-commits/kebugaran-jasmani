@@ -2,11 +2,13 @@ import React, { useState, useMemo } from 'react';
 import { AssessmentRecord } from '../types';
 import { CLASS_OPTIONS, PREDICATES } from '../constants/fitnessTests';
 import { exportRecordsToExcel } from '../utils/exportUtils';
+import { consolidateAssessmentRecords, ALL_FITNESS_TEST_IDS } from '../utils/consolidationUtils';
 import { 
   Search, Filter, ArrowUpDown, Download, Printer, Trash2, Eye, 
   FileSpreadsheet, Users, Trophy, Award, CheckCircle, RefreshCw, 
   Plus, ExternalLink, Code2, Copy, Check, LayoutGrid, Table as TableIcon,
-  ChevronDown, ChevronUp, Clock, Activity, Zap
+  ChevronDown, ChevronUp, Clock, Activity, Zap, AlertTriangle, AlertCircle,
+  Layers, Sparkles, CheckCircle2
 } from 'lucide-react';
 import { getPredicate } from '../utils/scoreCalculator';
 
@@ -14,7 +16,8 @@ interface ClassRecapTableProps {
   records: AssessmentRecord[];
   onSelectRecordToView: (record: AssessmentRecord) => void;
   onSelectRecordToPrint: (record: AssessmentRecord) => void;
-  onDeleteRecord: (id: string) => void;
+  onDeleteRecord: (id: string, sourceIds?: string[]) => Promise<void> | void;
+  onDeleteAllRecords: (classFilter?: string) => Promise<void> | void;
   onStartNewAssessment: () => void;
   isRealtimeConnected?: boolean;
 }
@@ -24,21 +27,35 @@ export const ClassRecapTable: React.FC<ClassRecapTableProps> = ({
   onSelectRecordToView,
   onSelectRecordToPrint,
   onDeleteRecord,
+  onDeleteAllRecords,
   onStartNewAssessment,
   isRealtimeConnected = true,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedClass, setSelectedClass] = useState<string>('ALL');
   const [selectedPredicate, setSelectedPredicate] = useState<string>('ALL');
+  const [completionFilter, setCompletionFilter] = useState<'ALL' | 'COMPLETED' | 'INCOMPLETE'>('ALL');
+  const [consolidateView, setConsolidateView] = useState(true);
   const [sortBy, setSortBy] = useState<'highest' | 'lowest' | 'name' | 'absen' | 'latest'>('latest');
   const [viewMode, setViewMode] = useState<'auto' | 'table' | 'cards'>('auto');
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
   const [showWebhookGuide, setShowWebhookGuide] = useState(false);
   const [copiedWebhook, setCopiedWebhook] = useState(false);
 
+  // State untuk Modal Hapus Semua Riwayat
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<'all' | 'class'>('all');
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
+  const [confirmDeleteWord, setConfirmDeleteWord] = useState('');
+
+  // Base records: automatically consolidated from the 6 assessors when enabled
+  const baseRecords = useMemo(() => {
+    return consolidateView ? consolidateAssessmentRecords(records) : records;
+  }, [records, consolidateView]);
+
   // Filter and Sort logic
   const filteredAndSortedRecords = useMemo(() => {
-    let result = [...records];
+    let result = [...baseRecords];
 
     // Filter Search
     if (searchTerm.trim() !== '') {
@@ -60,6 +77,13 @@ export const ClassRecapTable: React.FC<ClassRecapTableProps> = ({
       result = result.filter((r) => r.predicate === selectedPredicate);
     }
 
+    // Filter Completion (6/6 vs in-progress)
+    if (completionFilter === 'COMPLETED') {
+      result = result.filter((r) => r.completedTestsCount === 6);
+    } else if (completionFilter === 'INCOMPLETE') {
+      result = result.filter((r) => (r.completedTestsCount ?? 0) < 6);
+    }
+
     // Sort
     result.sort((a, b) => {
       if (sortBy === 'highest') return b.finalScore - a.finalScore;
@@ -74,20 +98,22 @@ export const ClassRecapTable: React.FC<ClassRecapTableProps> = ({
     });
 
     return result;
-  }, [records, searchTerm, selectedClass, selectedPredicate, sortBy]);
+  }, [baseRecords, searchTerm, selectedClass, selectedPredicate, completionFilter, sortBy]);
 
   // Summary statistics for active filtered view
   const stats = useMemo(() => {
     if (filteredAndSortedRecords.length === 0) {
-      return { count: 0, avg: 0, highest: 0, lowest: 0 };
+      return { count: 0, avg: 0, highest: 0, lowest: 0, completedCount: 0 };
     }
     const scores = filteredAndSortedRecords.map((r) => r.finalScore);
     const sum = scores.reduce((acc, v) => acc + v, 0);
+    const completedCount = filteredAndSortedRecords.filter((r) => r.completedTestsCount === 6).length;
     return {
       count: filteredAndSortedRecords.length,
       avg: Number((sum / scores.length).toFixed(2)),
       highest: Math.max(...scores),
       lowest: Math.min(...scores),
+      completedCount,
     };
   }, [filteredAndSortedRecords]);
 
@@ -188,6 +214,27 @@ function doPost(e) {
             <span className="hidden sm:inline">Cetak</span>
           </button>
 
+          <button
+            id="btn-recap-delete-all"
+            type="button"
+            disabled={records.length === 0}
+            onClick={() => {
+              setDeleteTarget(selectedClass !== 'ALL' ? 'class' : 'all');
+              setConfirmDeleteWord('');
+              setShowDeleteModal(true);
+            }}
+            className={`px-3 py-2 rounded-xl text-xs font-bold border flex items-center gap-1.5 transition min-h-[38px] ${
+              records.length === 0
+                ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
+                : 'bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border-rose-800/60 hover:border-rose-500 shadow-md shadow-rose-950/30 cursor-pointer'
+            }`}
+            title="Hapus riwayat penilaian siswa"
+          >
+            <Trash2 className="w-4 h-4 text-rose-400" />
+            <span className="hidden sm:inline">Hapus Semua Riwayat</span>
+            <span className="sm:hidden">Hapus</span>
+          </button>
+
           {/* View mode switcher */}
           <div className="flex items-center bg-slate-950 p-0.5 rounded-xl border border-slate-800">
             <button
@@ -214,8 +261,31 @@ function doPost(e) {
         </div>
       </div>
 
+      {/* Consolidation Info Banner */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-3.5 py-2.5 rounded-xl bg-indigo-950/40 border border-indigo-500/30 text-xs text-indigo-200">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-indigo-400 shrink-0" />
+          <span>
+            <strong>Rekapan 6 Penilai Otomatis:</strong> Ketika ke-6 penilai pos mengisi nilai, hasil tes siswa disatukan menjadi 1 baris di tabel dan file Excel.
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => setConsolidateView(!consolidateView)}
+          className={`px-2.5 py-1 rounded-lg text-xs font-bold border flex items-center gap-1.5 transition self-start sm:self-auto cursor-pointer whitespace-nowrap ${
+            consolidateView
+              ? 'bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-400'
+              : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+          }`}
+          title="Alihkan mode tampilan gabungan 6 penilai atau baris terpisah"
+        >
+          <Layers className="w-3.5 h-3.5" />
+          <span>{consolidateView ? 'Satukan 6 Penilai: AKTIF' : 'Satukan 6 Penilai: NONAKTIF'}</span>
+        </button>
+      </div>
+
       {/* Mini Stats Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 sm:gap-3">
         <div className="bg-slate-950 p-2.5 sm:p-3 rounded-xl border border-slate-800 flex items-center justify-between">
           <div>
             <span className="text-[10px] text-slate-400 font-bold uppercase">Total Siswa</span>
@@ -226,18 +296,28 @@ function doPost(e) {
 
         <div className="bg-slate-950 p-2.5 sm:p-3 rounded-xl border border-slate-800 flex items-center justify-between">
           <div>
-            <span className="text-[10px] text-slate-400 font-bold uppercase">Rata-Rata Nilai</span>
-            <p className="text-base sm:text-lg font-black text-emerald-400 font-mono mt-0.5">{stats.avg}</p>
+            <span className="text-[10px] text-slate-400 font-bold uppercase">6 Pos Lengkap</span>
+            <p className="text-base sm:text-lg font-black text-emerald-400 font-mono mt-0.5">
+              {stats.completedCount} <span className="text-xs text-slate-500 font-normal">/ {stats.count}</span>
+            </p>
           </div>
-          <Trophy className="w-5 h-5 text-emerald-400 opacity-80" />
+          <CheckCircle2 className="w-5 h-5 text-emerald-400 opacity-80" />
+        </div>
+
+        <div className="bg-slate-950 p-2.5 sm:p-3 rounded-xl border border-slate-800 flex items-center justify-between">
+          <div>
+            <span className="text-[10px] text-slate-400 font-bold uppercase">Rata-Rata</span>
+            <p className="text-base sm:text-lg font-black text-cyan-300 font-mono mt-0.5">{stats.avg}</p>
+          </div>
+          <Trophy className="w-5 h-5 text-cyan-400 opacity-80" />
         </div>
 
         <div className="bg-slate-950 p-2.5 sm:p-3 rounded-xl border border-slate-800 flex items-center justify-between">
           <div>
             <span className="text-[10px] text-slate-400 font-bold uppercase">Tertinggi</span>
-            <p className="text-base sm:text-lg font-black text-cyan-300 font-mono mt-0.5">{stats.highest}</p>
+            <p className="text-base sm:text-lg font-black text-emerald-300 font-mono mt-0.5">{stats.highest}</p>
           </div>
-          <Award className="w-5 h-5 text-cyan-400 opacity-80" />
+          <Award className="w-5 h-5 text-emerald-400 opacity-80" />
         </div>
 
         <div className="bg-slate-950 p-2.5 sm:p-3 rounded-xl border border-slate-800 flex items-center justify-between">
@@ -250,7 +330,7 @@ function doPost(e) {
       </div>
 
       {/* Filter and Search Toolbar */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3 bg-slate-950/80 p-3 rounded-xl border border-slate-800">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 sm:gap-3 bg-slate-950/80 p-3 rounded-xl border border-slate-800">
         {/* Search */}
         <div className="relative">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -279,6 +359,21 @@ function doPost(e) {
                 Kelas {c}
               </option>
             ))}
+          </select>
+        </div>
+
+        {/* Filter Status Pos Tes */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs text-slate-400 font-semibold whitespace-nowrap">Status:</span>
+          <select
+            id="select-filter-completion"
+            value={completionFilter}
+            onChange={(e) => setCompletionFilter(e.target.value as any)}
+            className="w-full py-2.5 px-2.5 bg-slate-900 border border-slate-700 rounded-xl text-xs sm:text-sm text-white focus:outline-none focus:border-cyan-500 font-medium min-h-[42px]"
+          >
+            <option value="ALL">Semua Status (6 Pos)</option>
+            <option value="COMPLETED">Lengkap (6/6 Tes Selesai)</option>
+            <option value="INCOMPLETE">Belum Lengkap (&lt; 6 Pos)</option>
           </select>
         </div>
 
@@ -346,6 +441,22 @@ function doPost(e) {
                         <span>•</span>
                         <span>({rec.student.gender === 'L' ? 'L' : 'P'})</span>
                       </div>
+                      <div className="flex items-center gap-2 flex-wrap mt-1.5">
+                        {rec.completedTestsCount === 6 ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-400" /> 6/6 Pos Selesai
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                            {rec.completedTestsCount ?? 0}/6 Pos Dinilai
+                          </span>
+                        )}
+                        {rec.student.examinerName && (
+                          <span className="text-[10px] text-slate-400 truncate max-w-[220px]" title={rec.student.examinerName}>
+                            Penilai: {rec.student.examinerName}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
 
@@ -397,7 +508,7 @@ function doPost(e) {
                   <button
                     type="button"
                     onClick={() => setExpandedCardId(isExpanded ? null : rec.id)}
-                    className="text-[11px] text-slate-400 hover:text-cyan-300 flex items-center gap-1 font-semibold py-1"
+                    className="text-[11px] text-slate-400 hover:text-cyan-300 flex items-center gap-1 font-semibold py-1 cursor-pointer"
                   >
                     {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                     <span>{isExpanded ? 'Tutup Rincian' : 'Lihat 6 Tes'}</span>
@@ -423,8 +534,8 @@ function doPost(e) {
                     <button
                       type="button"
                       onClick={() => {
-                        if (confirm(`Hapus data penilaian untuk ${rec.student.name}?`)) {
-                          onDeleteRecord(rec.id);
+                        if (confirm(`Hapus seluruh data penilaian untuk ${rec.student.name}?`)) {
+                          onDeleteRecord(rec.id, rec.sourceRecordIds);
                         }
                       }}
                       className="p-2 rounded-lg text-xs bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 border border-slate-700 min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
@@ -452,6 +563,7 @@ function doPost(e) {
               <th className="py-3 px-3">Nama Siswa</th>
               <th className="py-3 px-2 text-center">Kelas</th>
               <th className="py-3 px-2 text-center">Absen</th>
+              <th className="py-3 px-2 text-center">Status</th>
               <th className="py-3 px-2 text-center">Push Up</th>
               <th className="py-3 px-2 text-center">Sit Up</th>
               <th className="py-3 px-2 text-center">Back Up</th>
@@ -478,12 +590,30 @@ function doPost(e) {
                         <span>{rec.student.name}</span>
                         <span className="text-[10px] text-slate-500 font-normal">({rec.student.gender})</span>
                       </div>
+                      {rec.student.examinerName && (
+                        <span className="block text-[10px] text-slate-400 font-normal truncate max-w-[200px]" title={rec.student.examinerName}>
+                          Penilai: {rec.student.examinerName}
+                        </span>
+                      )}
                     </td>
                     <td className="py-3 px-2 text-center font-semibold text-cyan-300 whitespace-nowrap">
                       {rec.student.studentClass}
                     </td>
                     <td className="py-3 px-2 text-center font-mono text-slate-300">
                       {rec.student.attendanceNumber}
+                    </td>
+
+                    {/* Completion Status */}
+                    <td className="py-3 px-2 text-center whitespace-nowrap">
+                      {rec.completedTestsCount === 6 ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-400" /> 6/6 Selesai
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                          {rec.completedTestsCount ?? 0}/6 Pos
+                        </span>
+                      )}
                     </td>
 
                     {/* 6 Test Scores */}
@@ -546,8 +676,8 @@ function doPost(e) {
                         <button
                           type="button"
                           onClick={() => {
-                            if (confirm(`Hapus data penilaian untuk ${rec.student.name}?`)) {
-                              onDeleteRecord(rec.id);
+                            if (confirm(`Hapus seluruh data penilaian untuk ${rec.student.name}?`)) {
+                              onDeleteRecord(rec.id, rec.sourceRecordIds);
                             }
                           }}
                           title="Hapus Data"
@@ -562,7 +692,7 @@ function doPost(e) {
               })
             ) : (
               <tr>
-                <td colSpan={13} className="py-8 text-center text-slate-500">
+                <td colSpan={14} className="py-8 text-center text-slate-500">
                   Belum ada data siswa yang cocok dengan filter. Tekan <strong>+ Penilaian Baru</strong> untuk memulai.
                 </td>
               </tr>
@@ -570,6 +700,145 @@ function doPost(e) {
           </tbody>
         </table>
       </div>
+
+      {/* Modal Konfirmasi Hapus Semua Riwayat */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-rose-800/60 rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-4 relative overflow-hidden">
+            {/* Background Danger Glow */}
+            <div className="absolute top-0 right-0 w-40 h-40 bg-rose-500/10 rounded-full blur-3xl pointer-events-none" />
+
+            {/* Header */}
+            <div className="flex items-start gap-3.5">
+              <div className="w-11 h-11 rounded-xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 flex-shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-base sm:text-lg font-black text-white font-['Outfit'] tracking-tight">
+                  HAPUS RIWAYAT PENILAIAN
+                </h3>
+                <p className="text-xs text-rose-300/80 mt-0.5">
+                  Tindakan ini permanen dan menghapus data dari Cloud Firestore serta memori lokal.
+                </p>
+              </div>
+            </div>
+
+            {/* Target Selection if a specific class is currently filtered */}
+            {selectedClass !== 'ALL' && (
+              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
+                <label className="text-xs font-bold text-slate-300 block">
+                  Pilih Lingkup Data yang Ingin Dihapus:
+                </label>
+                <div className="grid grid-cols-1 gap-2">
+                  <label className={`flex items-center gap-2.5 p-2.5 rounded-lg border text-xs cursor-pointer transition ${
+                    deleteTarget === 'class'
+                      ? 'bg-rose-950/30 border-rose-500/60 text-white font-bold'
+                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="deleteTarget"
+                      checked={deleteTarget === 'class'}
+                      onChange={() => setDeleteTarget('class')}
+                      className="accent-rose-500"
+                    />
+                    <span>Hapus Khusus <strong>Kelas {selectedClass}</strong> Saja ({filteredAndSortedRecords.length} siswa)</span>
+                  </label>
+
+                  <label className={`flex items-center gap-2.5 p-2.5 rounded-lg border text-xs cursor-pointer transition ${
+                    deleteTarget === 'all'
+                      ? 'bg-rose-950/30 border-rose-500/60 text-white font-bold'
+                      : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}>
+                    <input
+                      type="radio"
+                      name="deleteTarget"
+                      checked={deleteTarget === 'all'}
+                      onChange={() => setDeleteTarget('all')}
+                      className="accent-rose-500"
+                    />
+                    <span>Hapus <strong>Semua Riwayat (Semua Kelas)</strong> ({records.length} siswa)</span>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {/* Warning Details Box */}
+            <div className="p-3.5 rounded-xl bg-rose-950/20 border border-rose-900/40 text-xs text-rose-200 space-y-1">
+              <p className="font-bold flex items-center gap-1.5 text-rose-300">
+                <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
+                Data yang akan dihapus:
+              </p>
+              <p className="text-slate-300">
+                {deleteTarget === 'class' && selectedClass !== 'ALL'
+                  ? `Sebanyak ${filteredAndSortedRecords.length} siswa dari Kelas ${selectedClass}.`
+                  : `Sebanyak ${records.length} data siswa dari seluruh kelas.`}
+              </p>
+              <p className="text-[11px] text-rose-400 mt-1">
+                Data yang sudah dihapus tidak dapat dipulihkan. Pastikan Anda telah mengunduh rekap Excel terlebih dahulu jika diperlukan.
+              </p>
+            </div>
+
+            {/* Type HAPUS Confirmation */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-300">
+                Ketik <strong className="text-rose-400 font-mono">HAPUS</strong> untuk mengonfirmasi:
+              </label>
+              <input
+                id="input-confirm-delete-word"
+                type="text"
+                value={confirmDeleteWord}
+                onChange={(e) => setConfirmDeleteWord(e.target.value)}
+                placeholder="Ketik HAPUS di sini..."
+                className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700 focus:border-rose-500 focus:ring-1 focus:ring-rose-500 rounded-xl text-sm font-semibold text-white placeholder-slate-600 outline-none"
+              />
+            </div>
+
+            {/* Modal Action Buttons */}
+            <div className="pt-2 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={isDeletingAll}
+                onClick={() => setShowDeleteModal(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer min-h-[38px]"
+              >
+                Batal
+              </button>
+              <button
+                id="btn-confirm-delete-all"
+                type="button"
+                disabled={confirmDeleteWord.trim().toUpperCase() !== 'HAPUS' || isDeletingAll}
+                onClick={async () => {
+                  setIsDeletingAll(true);
+                  try {
+                    await onDeleteAllRecords(deleteTarget === 'class' && selectedClass !== 'ALL' ? selectedClass : undefined);
+                    setShowDeleteModal(false);
+                  } finally {
+                    setIsDeletingAll(false);
+                  }
+                }}
+                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition min-h-[38px] ${
+                  confirmDeleteWord.trim().toUpperCase() === 'HAPUS' && !isDeletingAll
+                    ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-950/50 cursor-pointer'
+                    : 'bg-slate-800 text-slate-600 border border-slate-700 cursor-not-allowed'
+                }`}
+              >
+                {isDeletingAll ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Ya, Hapus Permanen</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

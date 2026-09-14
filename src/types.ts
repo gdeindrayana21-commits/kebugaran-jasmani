@@ -58,6 +58,9 @@ export interface AssessmentRecord {
   finalScore: number;
   predicate: string;
   notes?: string;
+  completedTestsCount?: number;
+  examinersList?: string[];
+  sourceRecordIds?: string[];
 }
 
 export type ScoreBenchmarksConfig = Record<FitnessTestType, ScoreBenchmark[]>;

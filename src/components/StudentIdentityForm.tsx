@@ -3,6 +3,7 @@ import { User, School, Hash, Calendar, ShieldCheck, CheckCircle2, AlertCircle, S
 import { StudentInfo, Gender, AssessmentRecord } from '../types';
 import { CLASS_OPTIONS, DEFAULT_TEACHER_NAME } from '../constants/fitnessTests';
 import { sound } from '../utils/soundEffects';
+import { consolidateAssessmentRecords } from '../utils/consolidationUtils';
 
 interface StudentIdentityFormProps {
   student: StudentInfo;
@@ -34,11 +35,12 @@ export const StudentIdentityForm: React.FC<StudentIdentityFormProps> = ({
   const isAbsenFilled = student.attendanceNumber.trim().length > 0;
   const isFormValid = isNameFilled && isClassFilled && isAbsenFilled;
 
-  // Find if this student already has assessment records in the database
+  // Find if this student already has assessment records in the database (consolidated across assessors)
   const matchingExistingRecord = useMemo(() => {
     if (!student.name.trim() || student.name.trim().length < 3 || isLocked) return null;
     const cleanName = student.name.trim().toLowerCase();
-    return existingRecords.find(
+    const consolidated = consolidateAssessmentRecords(existingRecords);
+    return consolidated.find(
       (r) =>
         r.student.studentClass === student.studentClass &&
         (r.student.name.toLowerCase() === cleanName ||
@@ -148,16 +150,24 @@ export const StudentIdentityForm: React.FC<StudentIdentityFormProps> = ({
         <div className="mb-4 p-3 rounded-xl bg-cyan-950/40 border border-cyan-500/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 text-xs text-cyan-200">
           <div className="flex items-center gap-2">
             <History className="w-4 h-4 text-cyan-400 flex-shrink-0" />
-            <span>
-              Ditemukan data penilaian atas nama <strong>{matchingExistingRecord.student.name}</strong> ({matchingExistingRecord.student.studentClass}, Absen {matchingExistingRecord.student.attendanceNumber}).
-            </span>
+            <div>
+              <span>
+                Ditemukan data penilaian untuk <strong>{matchingExistingRecord.student.name}</strong> ({matchingExistingRecord.student.studentClass}, Absen {matchingExistingRecord.student.attendanceNumber}).
+              </span>
+              <span className="block text-[11px] text-cyan-300 font-semibold mt-0.5">
+                Status: {matchingExistingRecord.completedTestsCount ?? 0}/6 Pos telah terisi
+                {matchingExistingRecord.examinersList && matchingExistingRecord.examinersList.length > 0
+                  ? ` (Penilai: ${matchingExistingRecord.examinersList.join(', ')})`
+                  : ''}
+              </span>
+            </div>
           </div>
           <button
             type="button"
             onClick={() => onLoadExistingRecord(matchingExistingRecord)}
             className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition flex-shrink-0"
           >
-            <span>Lanjutkan Data Ini</span>
+            <span>Muat & Satukan Nilai</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>

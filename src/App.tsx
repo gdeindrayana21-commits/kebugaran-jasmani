@@ -16,9 +16,11 @@ import { exportSingleRecordToExcel, exportRecordsToExcel } from './utils/exportU
 import { sound } from './utils/soundEffects';
 import { 
   subscribeToRecords, saveRecordToFirestore, 
-  deleteRecordFromFirestore, subscribeToBenchmarks, 
+  deleteRecordFromFirestore, deleteAllRecordsFromFirestore,
+  deleteRecordsByClassFromFirestore, subscribeToBenchmarks, 
   saveBenchmarksToFirestore 
 } from './utils/firebaseService';
+import { mergeWithExistingStudentAssessment, consolidateAssessmentRecords } from './utils/consolidationUtils';
 
 import { Header } from './components/Header';
 import { StudentIdentityForm } from './components/StudentIdentityForm';
@@ -301,7 +303,7 @@ export default function App() {
     }
 
     setIsSavingRecord(true);
-    const recordToSave: AssessmentRecord = {
+    const initialRecordToSave: AssessmentRecord = {
       id: currentRecordId,
       timestamp: new Date().toISOString(),
       student: { ...student },
@@ -311,6 +313,16 @@ export default function App() {
       predicate: summary.predicate,
       notes: notes.trim(),
     };
+
+    // Intelligently merge with any existing assessment for this student from other assessors
+    const recordToSave = mergeWithExistingStudentAssessment(initialRecordToSave, records);
+
+    // Update local state if merged with other tests
+    if (recordToSave.id !== currentRecordId) {
+      setCurrentRecordId(recordToSave.id);
+    }
+    setTests(recordToSave.tests);
+    setStudent(recordToSave.student);
 
     try {
       await saveRecordToFirestore(recordToSave);
@@ -323,9 +335,14 @@ export default function App() {
         origin: { y: 0.6 },
       });
 
+      const completedCount = recordToSave.completedTestsCount ?? 1;
+      const statusNote = completedCount === 6 
+        ? 'Lengkap (6/6 Tes dari 6 Pos Selesai)' 
+        : `${completedCount}/6 Tes Pos Dinilai`;
+
       showToast(
         'Tersimpan Real-time!',
-        `Data nilai ${student.name} (Kelas ${student.studentClass}) berhasil disinkronkan ke Database Cloud Firestore.`,
+        `Data nilai ${student.name} (${statusNote}) berhasil disinkronkan ke Database Cloud.`,
         'success'
       );
     } catch (err) {
@@ -404,13 +421,45 @@ export default function App() {
     exportSingleRecordToExcel(currentRecord);
   };
 
-  // Delete record from Firestore database
-  const handleDeleteRecord = async (id: string) => {
+  // Delete record from Firestore database (supports consolidated sourceRecordIds)
+  const handleDeleteRecord = async (id: string, sourceIds?: string[]) => {
     try {
-      await deleteRecordFromFirestore(id);
+      if (sourceIds && sourceIds.length > 0) {
+        for (const sid of sourceIds) {
+          await deleteRecordFromFirestore(sid);
+        }
+      } else {
+        await deleteRecordFromFirestore(id);
+      }
       showToast('Data Dihapus', 'Data penilaian telah dihapus dari database real-time.', 'warn');
     } catch {
       showToast('Gagal Menghapus', 'Terjadi kesalahan saat menghapus data.', 'warn');
+    }
+  };
+
+  // Delete all records or filtered class records from Firestore database
+  const handleDeleteAllRecords = async (classFilter?: string) => {
+    try {
+      if (classFilter && classFilter !== 'ALL') {
+        const count = await deleteRecordsByClassFromFirestore(classFilter);
+        setRecords((prev) => prev.filter((r) => r.student.studentClass !== classFilter));
+        showToast(
+          'Riwayat Kelas Dihapus',
+          `Sebanyak ${count} data penilaian Kelas ${classFilter} berhasil dihapus dari database.`,
+          'info'
+        );
+      } else {
+        const count = await deleteAllRecordsFromFirestore();
+        setRecords([]);
+        clearActiveDraft();
+        showToast(
+          'Semua Riwayat Dihapus',
+          `Sebanyak ${count} data penilaian telah dihapus dari Cloud Firestore dan penyimpanan lokal.`,
+          'info'
+        );
+      }
+    } catch {
+      showToast('Gagal Menghapus', 'Terjadi kesalahan saat menghapus data dari Cloud Firestore.', 'warn');
     }
   };
 
@@ -641,6 +690,7 @@ export default function App() {
             onSelectRecordToView={handleSelectRecordToView}
             onSelectRecordToPrint={(rec) => setRecordForPrint(rec)}
             onDeleteRecord={handleDeleteRecord}
+            onDeleteAllRecords={handleDeleteAllRecords}
             onStartNewAssessment={() => {
               handleNextStudent();
               setActiveTab('assessment');

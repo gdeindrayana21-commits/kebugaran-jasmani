@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { AssessmentRecord } from '../types';
+import { consolidateAssessmentRecords } from './consolidationUtils';
 
 export function exportRecordsToExcel(records: AssessmentRecord[], filename = 'Rekap_Nilai_PJOK_KelasX_SMAN1Tejakula') {
   if (!records || records.length === 0) {
@@ -7,14 +8,24 @@ export function exportRecordsToExcel(records: AssessmentRecord[], filename = 'Re
     return;
   }
 
-  const rows = records.map((rec) => {
+  // Automatically consolidate multiple assessor inputs so that when all 6 assessors have submitted,
+  // each student becomes exactly 1 consolidated row with all 6 tests matching their respective results.
+  const consolidated = consolidateAssessmentRecords(records);
+
+  const rows = consolidated.map((rec, idx) => {
+    const isCompletedAll6 = rec.completedTestsCount === 6;
+    const statusText = isCompletedAll6
+      ? 'Lengkap (6/6 Tes Selesai)'
+      : `${rec.completedTestsCount ?? 0}/6 Tes Selesai`;
+
     return {
-      'Timestamp': new Date(rec.timestamp).toLocaleString('id-ID'),
-      'Nama Penilai': rec.student.examinerName || '',
+      'No': idx + 1,
       'Nama Siswa': rec.student.name,
       'Kelas': rec.student.studentClass,
       'No. Absen': rec.student.attendanceNumber,
       'Jenis Kelamin': rec.student.gender === 'L' ? 'Laki-laki' : 'Perempuan',
+      'Nama Penilai': rec.student.examinerName || '',
+      'Status Penilaian': statusText,
       'Tanggal': rec.student.testDate,
       
       'Push Up – jumlah': rec.tests.push_up?.reps ?? 0,
@@ -42,9 +53,10 @@ export function exportRecordsToExcel(records: AssessmentRecord[], filename = 'Re
       'Naik Turun Tangga – nilai': rec.tests.naik_turun_tangga?.score ?? 0,
 
       'Total Nilai': rec.totalScore,
-      'Nilai Akhir': rec.finalScore,
+      'Nilai Akhir': Number(rec.finalScore.toFixed(2)),
       'Predikat': rec.predicate,
-      'Catatan Guru': rec.notes || '',
+      'Catatan Penilai': rec.notes || '',
+      'Waktu Rekam Terakhir': new Date(rec.timestamp).toLocaleString('id-ID'),
     };
   });
 
