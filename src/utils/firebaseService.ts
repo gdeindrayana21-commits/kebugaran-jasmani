@@ -255,6 +255,40 @@ export async function deleteRecordsByClassFromFirestore(studentClass: string): P
 }
 
 /**
+ * Delete multiple assessment records by IDs from Firestore and local cache
+ */
+export async function deleteMultipleRecordsFromFirestore(recordIds: string[]): Promise<number> {
+  if (recordIds.length === 0) return 0;
+
+  // 1. Update local cache
+  const idSet = new Set(recordIds);
+  const current = getSavedRecords();
+  const filtered = current.filter((r) => !idSet.has(r.id));
+  saveRecords(filtered);
+
+  // Remove from pending sync queue as well
+  recordIds.forEach((id) => removePendingSyncRecord(id));
+
+  // 2. Delete from Firestore in batches
+  try {
+    const batchSize = 400;
+    for (let i = 0; i < recordIds.length; i += batchSize) {
+      const batch = writeBatch(db);
+      const chunk = recordIds.slice(i, i + batchSize);
+      chunk.forEach((id) => {
+        const docRef = doc(db, RECORDS_COLLECTION, id);
+        batch.delete(docRef);
+      });
+      await batch.commit();
+    }
+    return recordIds.length;
+  } catch (err) {
+    console.error('Firestore batch delete failed:', err);
+    throw err;
+  }
+}
+
+/**
  * Real-time listener for scoring benchmarks configuration
  */
 export function subscribeToBenchmarks(

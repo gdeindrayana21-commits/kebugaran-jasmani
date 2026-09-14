@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { User, School, Hash, Calendar, ShieldCheck, CheckCircle2, AlertCircle, Sparkles, RefreshCw, Smartphone, History, ArrowRight } from 'lucide-react';
 import { StudentInfo, Gender, AssessmentRecord } from '../types';
 import { CLASS_OPTIONS, DEFAULT_TEACHER_NAME } from '../constants/fitnessTests';
@@ -30,6 +30,7 @@ export const StudentIdentityForm: React.FC<StudentIdentityFormProps> = ({
   onLoadExistingRecord,
   hasRestoredDraft = false,
 }) => {
+  const [validationError, setValidationError] = useState<string | null>(null);
   const isNameFilled = student.name.trim().length > 0;
   const isClassFilled = student.studentClass.trim().length > 0;
   const isAbsenFilled = student.attendanceNumber.trim().length > 0;
@@ -51,17 +52,18 @@ export const StudentIdentityForm: React.FC<StudentIdentityFormProps> = ({
   const handleStartAssessment = (e: React.FormEvent) => {
     e.preventDefault();
     if (!isNameFilled) {
-      alert('Nama Siswa wajib diisi sebelum melakukan penilaian!');
+      setValidationError('Nama Siswa wajib diisi sebelum melakukan penilaian!');
       return;
     }
     if (!isClassFilled) {
-      alert('Silakan pilih Kelas siswa!');
+      setValidationError('Silakan pilih Kelas siswa!');
       return;
     }
     if (!isAbsenFilled) {
-      alert('Silakan masukkan Nomor Absen siswa!');
+      setValidationError('Silakan masukkan Nomor Absen siswa!');
       return;
     }
+    setValidationError(null);
     setIsLocked(true);
     sound.playStart();
   };
@@ -71,6 +73,20 @@ export const StudentIdentityForm: React.FC<StudentIdentityFormProps> = ({
       {/* Sporty Glow Accent */}
       <div className="absolute top-0 right-0 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-0 left-0 w-48 h-48 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
+
+      {/* Inline validation message */}
+      {validationError && (
+        <div className="mb-4 p-3 rounded-xl bg-rose-950/40 border border-rose-800 text-rose-300 text-xs flex items-center justify-between gap-2 animate-fade-in">
+          <span>⚠️ {validationError}</span>
+          <button
+            type="button"
+            onClick={() => setValidationError(null)}
+            className="text-slate-400 hover:text-white text-xs font-bold"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Header of Form */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 sm:pb-4 mb-4 sm:mb-5 border-b border-slate-800/80">

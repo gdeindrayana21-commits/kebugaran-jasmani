@@ -16,9 +16,9 @@ import { exportSingleRecordToExcel, exportRecordsToExcel } from './utils/exportU
 import { sound } from './utils/soundEffects';
 import { 
   subscribeToRecords, saveRecordToFirestore, 
-  deleteRecordFromFirestore, deleteAllRecordsFromFirestore,
-  deleteRecordsByClassFromFirestore, subscribeToBenchmarks, 
-  saveBenchmarksToFirestore 
+  deleteRecordFromFirestore, deleteMultipleRecordsFromFirestore,
+  deleteAllRecordsFromFirestore, deleteRecordsByClassFromFirestore,
+  subscribeToBenchmarks, saveBenchmarksToFirestore 
 } from './utils/firebaseService';
 import { mergeWithExistingStudentAssessment, consolidateAssessmentRecords } from './utils/consolidationUtils';
 
@@ -425,15 +425,51 @@ export default function App() {
   const handleDeleteRecord = async (id: string, sourceIds?: string[]) => {
     try {
       if (sourceIds && sourceIds.length > 0) {
-        for (const sid of sourceIds) {
-          await deleteRecordFromFirestore(sid);
-        }
+        await deleteMultipleRecordsFromFirestore(sourceIds);
       } else {
         await deleteRecordFromFirestore(id);
       }
       showToast('Data Dihapus', 'Data penilaian telah dihapus dari database real-time.', 'warn');
     } catch {
       showToast('Gagal Menghapus', 'Terjadi kesalahan saat menghapus data.', 'warn');
+    }
+  };
+
+  // Delete multiple records (bulk delete from checkbox selection)
+  const handleDeleteMultipleRecords = async (ids: string[], allSourceIds?: string[]) => {
+    try {
+      const targetIds = allSourceIds && allSourceIds.length > 0 ? allSourceIds : ids;
+      await deleteMultipleRecordsFromFirestore(targetIds);
+      setRecords((prev) => prev.filter((r) => !ids.includes(r.id) && !targetIds.includes(r.id)));
+      showToast(
+        'Data Terpilih Dihapus',
+        `Sebanyak ${ids.length} data rekapan siswa berhasil dihapus dari Cloud Firestore.`,
+        'warn'
+      );
+    } catch {
+      showToast('Gagal Menghapus', 'Terjadi kesalahan saat menghapus data terpilih.', 'warn');
+    }
+  };
+
+  // Delete current active student assessment from database
+  const handleDeleteCurrentStudent = async () => {
+    try {
+      const existing = records.find(
+        (r) =>
+          r.id === currentRecordId ||
+          (r.student.name.trim().toLowerCase() === student.name.trim().toLowerCase() &&
+            r.student.studentClass === student.studentClass)
+      );
+
+      if (existing) {
+        await handleDeleteRecord(existing.id, existing.sourceRecordIds);
+      } else if (currentRecordId) {
+        await handleDeleteRecord(currentRecordId);
+      }
+      clearActiveDraft();
+      handleNextStudent();
+    } catch {
+      showToast('Gagal Menghapus', 'Terjadi kesalahan saat menghapus rekapan siswa.', 'warn');
     }
   };
 
@@ -676,6 +712,7 @@ export default function App() {
                 setIsStudentLocked(true);
                 setActiveTestId(id);
               }}
+              onDeleteCurrentStudent={handleDeleteCurrentStudent}
               isAlreadySaved={isSavedInRecap}
               isSaving={isSavingRecord}
             />
@@ -690,6 +727,7 @@ export default function App() {
             onSelectRecordToView={handleSelectRecordToView}
             onSelectRecordToPrint={(rec) => setRecordForPrint(rec)}
             onDeleteRecord={handleDeleteRecord}
+            onDeleteMultipleRecords={handleDeleteMultipleRecords}
             onDeleteAllRecords={handleDeleteAllRecords}
             onStartNewAssessment={() => {
               handleNextStudent();

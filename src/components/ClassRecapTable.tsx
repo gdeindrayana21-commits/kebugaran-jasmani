@@ -17,6 +17,7 @@ interface ClassRecapTableProps {
   onSelectRecordToView: (record: AssessmentRecord) => void;
   onSelectRecordToPrint: (record: AssessmentRecord) => void;
   onDeleteRecord: (id: string, sourceIds?: string[]) => Promise<void> | void;
+  onDeleteMultipleRecords?: (ids: string[], allSourceIds?: string[]) => Promise<void> | void;
   onDeleteAllRecords: (classFilter?: string) => Promise<void> | void;
   onStartNewAssessment: () => void;
   isRealtimeConnected?: boolean;
@@ -27,6 +28,7 @@ export const ClassRecapTable: React.FC<ClassRecapTableProps> = ({
   onSelectRecordToView,
   onSelectRecordToPrint,
   onDeleteRecord,
+  onDeleteMultipleRecords,
   onDeleteAllRecords,
   onStartNewAssessment,
   isRealtimeConnected = true,
@@ -41,6 +43,15 @@ export const ClassRecapTable: React.FC<ClassRecapTableProps> = ({
   const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
   const [showWebhookGuide, setShowWebhookGuide] = useState(false);
   const [copiedWebhook, setCopiedWebhook] = useState(false);
+
+  // State untuk Modal Hapus Satu Data Siswa
+  const [recordToDelete, setRecordToDelete] = useState<AssessmentRecord | null>(null);
+  const [isDeletingSingle, setIsDeletingSingle] = useState(false);
+
+  // State untuk Multi-Select Checkbox & Hapus Terpilih
+  const [selectedRecordIds, setSelectedRecordIds] = useState<Set<string>>(new Set());
+  const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
+  const [isDeletingBulk, setIsDeletingBulk] = useState(false);
 
   // State untuk Modal Hapus Semua Riwayat
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -124,6 +135,44 @@ export const ClassRecapTable: React.FC<ClassRecapTableProps> = ({
   const handlePrintTable = () => {
     window.print();
   };
+
+  // Toggle selection for a single student
+  const toggleSelectRecord = (id: string) => {
+    setSelectedRecordIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  // Toggle selection for all filtered records
+  const toggleSelectAll = () => {
+    if (filteredAndSortedRecords.length === 0) return;
+    const allFilteredSelected = filteredAndSortedRecords.every((r) => selectedRecordIds.has(r.id));
+    if (allFilteredSelected) {
+      setSelectedRecordIds((prev) => {
+        const next = new Set(prev);
+        filteredAndSortedRecords.forEach((r) => next.delete(r.id));
+        return next;
+      });
+    } else {
+      setSelectedRecordIds((prev) => {
+        const next = new Set(prev);
+        filteredAndSortedRecords.forEach((r) => next.add(r.id));
+        return next;
+      });
+    }
+  };
+
+  const isAllFilteredSelected =
+    filteredAndSortedRecords.length > 0 &&
+    filteredAndSortedRecords.every((r) => selectedRecordIds.has(r.id));
+  const isSomeFilteredSelected =
+    filteredAndSortedRecords.some((r) => selectedRecordIds.has(r.id)) && !isAllFilteredSelected;
 
   const sampleAppsScriptCode = `// Google Apps Script untuk Google Spreadsheet Webhook
 function doPost(e) {
@@ -413,20 +462,69 @@ function doPost(e) {
         </div>
       </div>
 
+      {/* Floating / Sticky Multi-Selection Action Toolbar */}
+      {selectedRecordIds.size > 0 && (
+        <div className="sticky top-2 z-30 p-3 sm:p-3.5 rounded-xl bg-slate-900/95 border border-rose-500/50 shadow-2xl backdrop-blur-md flex flex-wrap items-center justify-between gap-3 animate-fade-in">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-rose-500/20 border border-rose-500/40 text-rose-300 flex items-center justify-center font-bold text-xs">
+              {selectedRecordIds.size}
+            </div>
+            <div>
+              <span className="text-xs sm:text-sm font-bold text-white block">
+                {selectedRecordIds.size} Data Siswa Terpilih
+              </span>
+              <span className="text-[11px] text-slate-400">
+                Pilih opsi aksi untuk data rekapan yang dicentang
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSelectedRecordIds(new Set())}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition cursor-pointer"
+            >
+              Batal Pilih
+            </button>
+            <button
+              id="btn-trigger-bulk-delete"
+              type="button"
+              onClick={() => setShowBulkDeleteModal(true)}
+              className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white flex items-center gap-1.5 shadow-lg shadow-rose-950/40 transition cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Hapus {selectedRecordIds.size} Terpilih</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* MOBILE-FRIENDLY CARD VIEW (Visible on mobile by default or when selected) */}
       <div className={`${viewMode === 'table' ? 'hidden' : viewMode === 'cards' ? 'block' : 'block md:hidden'} space-y-3`}>
         {filteredAndSortedRecords.length > 0 ? (
           filteredAndSortedRecords.map((rec, index) => {
             const predInfo = getPredicate(rec.finalScore);
             const isExpanded = expandedCardId === rec.id;
+            const isChecked = selectedRecordIds.has(rec.id);
 
             return (
               <div 
                 key={rec.id}
-                className="bg-slate-950 border border-slate-800 rounded-xl p-3.5 space-y-3 shadow-md hover:border-slate-700 transition"
+                className={`bg-slate-950 border rounded-xl p-3.5 space-y-3 shadow-md transition ${
+                  isChecked ? 'border-rose-500/60 bg-rose-950/10' : 'border-slate-800 hover:border-slate-700'
+                }`}
               >
                 <div className="flex items-start justify-between gap-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2.5">
+                    {/* Checkbox for selection */}
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => toggleSelectRecord(rec.id)}
+                      className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-rose-500 focus:ring-rose-500 cursor-pointer accent-rose-500"
+                      title="Pilih data siswa ini"
+                    />
+
                     <span className="w-6 h-6 rounded-full bg-slate-800 text-slate-300 text-xs font-bold flex items-center justify-center flex-shrink-0">
                       {index + 1}
                     </span>
@@ -533,12 +631,9 @@ function doPost(e) {
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        if (confirm(`Hapus seluruh data penilaian untuk ${rec.student.name}?`)) {
-                          onDeleteRecord(rec.id, rec.sourceRecordIds);
-                        }
-                      }}
-                      className="p-2 rounded-lg text-xs bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 border border-slate-700 min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer"
+                      onClick={() => setRecordToDelete(rec)}
+                      title="Hapus data rekapan siswa ini"
+                      className="p-2 rounded-lg text-xs bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 border border-slate-700 min-h-[36px] min-w-[36px] flex items-center justify-center cursor-pointer transition"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -559,6 +654,18 @@ function doPost(e) {
         <table className="w-full text-left text-xs">
           <thead className="bg-slate-900/90 text-slate-300 uppercase text-[10px] font-black tracking-wider border-b border-slate-800">
             <tr>
+              <th className="py-3 px-2 text-center w-9">
+                <input
+                  type="checkbox"
+                  checked={isAllFilteredSelected}
+                  ref={(input) => {
+                    if (input) input.indeterminate = isSomeFilteredSelected;
+                  }}
+                  onChange={toggleSelectAll}
+                  className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-rose-500 focus:ring-rose-500 cursor-pointer accent-rose-500"
+                  title="Pilih / Batalkan semua siswa di tabel"
+                />
+              </th>
               <th className="py-3 px-2 text-center w-10">No</th>
               <th className="py-3 px-3">Nama Siswa</th>
               <th className="py-3 px-2 text-center">Kelas</th>
@@ -579,9 +686,24 @@ function doPost(e) {
             {filteredAndSortedRecords.length > 0 ? (
               filteredAndSortedRecords.map((rec, index) => {
                 const predInfo = getPredicate(rec.finalScore);
+                const isChecked = selectedRecordIds.has(rec.id);
 
                 return (
-                  <tr key={rec.id} className="hover:bg-slate-900/60 transition group">
+                  <tr 
+                    key={rec.id} 
+                    className={`transition group ${
+                      isChecked ? 'bg-rose-950/20 hover:bg-rose-950/30' : 'hover:bg-slate-900/60'
+                    }`}
+                  >
+                    <td className="py-3 px-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => toggleSelectRecord(rec.id)}
+                        className="w-4 h-4 rounded border-slate-700 bg-slate-900 text-rose-500 focus:ring-rose-500 cursor-pointer accent-rose-500"
+                        title="Pilih data siswa ini"
+                      />
+                    </td>
                     <td className="py-3 px-2 text-center font-bold text-slate-400">
                       {index + 1}
                     </td>
@@ -661,7 +783,7 @@ function doPost(e) {
                           type="button"
                           onClick={() => onSelectRecordToView(rec)}
                           title="Buka / Edit Hasil Siswa Ini"
-                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-cyan-950 text-cyan-400 hover:text-cyan-300 border border-slate-700 hover:border-cyan-700 transition"
+                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-cyan-950 text-cyan-400 hover:text-cyan-300 border border-slate-700 hover:border-cyan-700 transition cursor-pointer"
                         >
                           <Eye className="w-3.5 h-3.5" />
                         </button>
@@ -669,19 +791,15 @@ function doPost(e) {
                           type="button"
                           onClick={() => onSelectRecordToPrint(rec)}
                           title="Cetak Lembar Resmi A4 Siswa Ini"
-                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-emerald-950 text-emerald-400 hover:text-emerald-300 border border-slate-700 hover:border-emerald-700 transition"
+                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-emerald-950 text-emerald-400 hover:text-emerald-300 border border-slate-700 hover:border-emerald-700 transition cursor-pointer"
                         >
                           <Printer className="w-3.5 h-3.5" />
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            if (confirm(`Hapus seluruh data penilaian untuk ${rec.student.name}?`)) {
-                              onDeleteRecord(rec.id, rec.sourceRecordIds);
-                            }
-                          }}
-                          title="Hapus Data"
-                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 border border-slate-700 hover:border-rose-800 transition"
+                          onClick={() => setRecordToDelete(rec)}
+                          title="Hapus Data Rekapan Siswa Ini"
+                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-950 text-slate-400 hover:text-rose-400 border border-slate-700 hover:border-rose-800 transition cursor-pointer"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -692,7 +810,7 @@ function doPost(e) {
               })
             ) : (
               <tr>
-                <td colSpan={14} className="py-8 text-center text-slate-500">
+                <td colSpan={15} className="py-8 text-center text-slate-500">
                   Belum ada data siswa yang cocok dengan filter. Tekan <strong>+ Penilaian Baru</strong> untuk memulai.
                 </td>
               </tr>
@@ -701,7 +819,230 @@ function doPost(e) {
         </table>
       </div>
 
-      {/* Modal Konfirmasi Hapus Semua Riwayat */}
+      {/* MODAL 1: KONFIRMASI HAPUS SATU DATA REKAPAN SISWA */}
+      {recordToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-rose-800/60 rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-4 relative overflow-hidden">
+            {/* Background Glow */}
+            <div className="absolute top-0 right-0 w-36 h-36 bg-rose-500/10 rounded-full blur-3xl pointer-events-none" />
+
+            {/* Header */}
+            <div className="flex items-start gap-3.5">
+              <div className="w-11 h-11 rounded-xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 flex-shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-base sm:text-lg font-black text-white font-['Outfit'] tracking-tight">
+                  HAPUS DATA REKAPAN SISWA
+                </h3>
+                <p className="text-xs text-rose-300/80 mt-0.5">
+                  Konfirmasi penghapusan data rekapan penilaian kebugaran jasmani
+                </p>
+              </div>
+            </div>
+
+            {/* Student Info Box */}
+            <div className="p-3.5 rounded-xl bg-slate-950/90 border border-slate-800 space-y-2 text-xs">
+              <div className="flex items-center justify-between border-b border-slate-800/80 pb-2">
+                <span className="text-slate-400">Nama Siswa:</span>
+                <span className="font-bold text-white text-sm">{recordToDelete.student.name}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Kelas & Absen:</span>
+                <span className="font-semibold text-cyan-300">
+                  Kelas {recordToDelete.student.studentClass} • No. {recordToDelete.student.attendanceNumber || '-'} ({recordToDelete.student.gender})
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Status Pengisian:</span>
+                <span className="font-semibold text-slate-200">
+                  {recordToDelete.completedTestsCount ?? 0} dari 6 Pos Tes Terisi
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400">Nilai Akhir & Predikat:</span>
+                <span className="font-mono font-bold text-emerald-400">
+                  {recordToDelete.finalScore.toFixed(2)} ({recordToDelete.predicate})
+                </span>
+              </div>
+              {recordToDelete.examinersList && recordToDelete.examinersList.length > 0 && (
+                <div className="flex items-center justify-between pt-1 border-t border-slate-800/80">
+                  <span className="text-slate-400">Guru Penilai:</span>
+                  <span className="text-slate-300 text-[11px] truncate max-w-[220px]" title={recordToDelete.examinersList.join(', ')}>
+                    {recordToDelete.examinersList.join(', ')}
+                  </span>
+                </div>
+              )}
+              {recordToDelete.sourceRecordIds && recordToDelete.sourceRecordIds.length > 1 && (
+                <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
+                  ⚠️ Rekapan ini menggabungkan nilai dari <strong>{recordToDelete.sourceRecordIds.length} pos penilai</strong>. Menghapus data ini akan membersihkan seluruh dokumen sumber pos terkait.
+                </div>
+              )}
+            </div>
+
+            <div className="p-3 rounded-xl bg-rose-950/20 border border-rose-900/40 text-xs text-rose-300 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
+              <p>Data penilaian siswa ini akan dihapus secara permanen dari Cloud Firestore dan tidak dapat dikembalikan.</p>
+            </div>
+
+            {/* Buttons */}
+            <div className="pt-2 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={isDeletingSingle}
+                onClick={() => setRecordToDelete(null)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer min-h-[38px]"
+              >
+                Batal
+              </button>
+              <button
+                id="btn-confirm-delete-single"
+                type="button"
+                disabled={isDeletingSingle}
+                onClick={async () => {
+                  setIsDeletingSingle(true);
+                  try {
+                    await onDeleteRecord(recordToDelete.id, recordToDelete.sourceRecordIds);
+                    setSelectedRecordIds((prev) => {
+                      const next = new Set(prev);
+                      next.delete(recordToDelete.id);
+                      return next;
+                    });
+                    setRecordToDelete(null);
+                  } finally {
+                    setIsDeletingSingle(false);
+                  }
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white flex items-center gap-1.5 shadow-lg shadow-rose-950/50 transition cursor-pointer min-h-[38px]"
+              >
+                {isDeletingSingle ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Ya, Hapus Data Ini</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: KONFIRMASI HAPUS MASSAL DATA TERPILIH (MULTI-SELECT) */}
+      {showBulkDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-slate-900 border border-rose-800/60 rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-4 relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-40 h-40 bg-rose-500/10 rounded-full blur-3xl pointer-events-none" />
+
+            {/* Header */}
+            <div className="flex items-start gap-3.5">
+              <div className="w-11 h-11 rounded-xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 flex-shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-base sm:text-lg font-black text-white font-['Outfit'] tracking-tight">
+                  HAPUS {selectedRecordIds.size} DATA REKAPAN TERPILIH
+                </h3>
+                <p className="text-xs text-rose-300/80 mt-0.5">
+                  Konfirmasi penghapusan massal untuk siswa yang Anda centang
+                </p>
+              </div>
+            </div>
+
+            {/* List of Selected Students */}
+            <div className="space-y-1.5">
+              <span className="text-xs font-bold text-slate-300">
+                Daftar Siswa yang Akan Dihapus ({selectedRecordIds.size}):
+              </span>
+              <div className="max-h-48 overflow-y-auto p-2.5 rounded-xl bg-slate-950/90 border border-slate-800 divide-y divide-slate-800/60 text-xs">
+                {Array.from(selectedRecordIds).map((id) => {
+                  const item = baseRecords.find((r) => r.id === id);
+                  if (!item) return null;
+                  return (
+                    <div key={id} className="py-2 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-white">{item.student.name}</span>
+                        <span className="text-cyan-400 text-[11px]">(Kelas {item.student.studentClass}, Absen {item.student.attendanceNumber})</span>
+                      </div>
+                      <span className="font-mono text-emerald-400 font-bold">{item.finalScore.toFixed(2)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-rose-950/20 border border-rose-900/40 text-xs text-rose-300 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0 mt-0.5" />
+              <p>
+                Data dari {selectedRecordIds.size} siswa ini (termasuk dokumen penggabungan pos terkait) akan dihapus secara permanen dari Cloud Firestore.
+              </p>
+            </div>
+
+            {/* Buttons */}
+            <div className="pt-2 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={isDeletingBulk}
+                onClick={() => setShowBulkDeleteModal(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer min-h-[38px]"
+              >
+                Batal
+              </button>
+              <button
+                id="btn-confirm-delete-bulk"
+                type="button"
+                disabled={isDeletingBulk}
+                onClick={async () => {
+                  setIsDeletingBulk(true);
+                  try {
+                    const idsArray: string[] = Array.from(selectedRecordIds);
+                    const allSourceIds: string[] = [];
+                    idsArray.forEach((id: string) => {
+                      const rec = baseRecords.find((r) => r.id === id);
+                      if (rec?.sourceRecordIds && rec.sourceRecordIds.length > 0) {
+                        allSourceIds.push(...rec.sourceRecordIds);
+                      } else {
+                        allSourceIds.push(id);
+                      }
+                    });
+
+                    if (onDeleteMultipleRecords) {
+                      await onDeleteMultipleRecords(idsArray, allSourceIds);
+                    } else {
+                      for (const sid of allSourceIds) {
+                        await onDeleteRecord(sid);
+                      }
+                    }
+                    setSelectedRecordIds(new Set());
+                    setShowBulkDeleteModal(false);
+                  } finally {
+                    setIsDeletingBulk(false);
+                  }
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white flex items-center gap-1.5 shadow-lg shadow-rose-950/50 transition cursor-pointer min-h-[38px]"
+              >
+                {isDeletingBulk ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Ya, Hapus {selectedRecordIds.size} Siswa Terpilih</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: KONFIRMASI HAPUS SEMUA RIWAYAT */}
       {showDeleteModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-sm">
           <div className="bg-slate-900 border border-rose-800/60 rounded-2xl max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-4 relative overflow-hidden">
@@ -781,9 +1122,18 @@ function doPost(e) {
 
             {/* Type HAPUS Confirmation */}
             <div className="space-y-1.5">
-              <label className="block text-xs font-bold text-slate-300">
-                Ketik <strong className="text-rose-400 font-mono">HAPUS</strong> untuk mengonfirmasi:
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold text-slate-300">
+                  Ketik <strong className="text-rose-400 font-mono">HAPUS</strong> untuk konfirmasi:
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setConfirmDeleteWord('HAPUS')}
+                  className="text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold cursor-pointer underline"
+                >
+                  Isi Otomatis
+                </button>
+              </div>
               <input
                 id="input-confirm-delete-word"
                 type="text"
