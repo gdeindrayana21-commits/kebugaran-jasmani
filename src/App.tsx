@@ -20,7 +20,12 @@ import {
   deleteAllRecordsFromFirestore, deleteRecordsByClassFromFirestore,
   subscribeToBenchmarks, saveBenchmarksToFirestore 
 } from './utils/firebaseService';
-import { mergeWithExistingStudentAssessment, consolidateAssessmentRecords } from './utils/consolidationUtils';
+import { 
+  mergeWithExistingStudentAssessment, 
+  consolidateAssessmentRecords,
+  isSameStudent,
+  isTestCompleted
+} from './utils/consolidationUtils';
 
 import { Header } from './components/Header';
 import { StudentIdentityForm } from './components/StudentIdentityForm';
@@ -226,47 +231,69 @@ export default function App() {
     };
   }, []);
 
-  // Save single test result from Modal with immediate Real-Time Auto-Save
+  // Save single test result from Modal with immediate Real-Time Auto-Save and Zero Data Loss
   const handleSaveSingleTest = (result: SingleTestResult) => {
     const updatedTests = {
       ...tests,
       [result.testId]: result,
     };
-    setTests(updatedTests);
+
+    const currentSummary = calculateSummary(updatedTests);
+
+    const initialRecordToSave: AssessmentRecord = {
+      id: currentRecordId,
+      timestamp: new Date().toISOString(),
+      student: { ...student },
+      tests: updatedTests,
+      totalScore: currentSummary.totalScore,
+      finalScore: currentSummary.finalScore,
+      predicate: currentSummary.predicate,
+      notes: notes.trim(),
+    };
+
+    // Intelligently merge with existing student record so ANY previously assessed tests are NEVER lost!
+    const recordToSave = mergeWithExistingStudentAssessment(initialRecordToSave, records);
+
+    // Update active document ID if merged with an existing document
+    if (recordToSave.id !== currentRecordId) {
+      setCurrentRecordId(recordToSave.id);
+    }
+    // Update local tests state with merged tests so all completed tests are visible
+    setTests(recordToSave.tests);
 
     // 1. Immediately persist active draft to local storage
     saveActiveDraft({
-      recordId: currentRecordId,
-      student,
-      tests: updatedTests,
-      notes,
+      recordId: recordToSave.id,
+      student: recordToSave.student,
+      tests: recordToSave.tests,
+      notes: recordToSave.notes || notes,
       isLocked: isStudentLocked,
       lastUpdated: new Date().toISOString(),
     });
 
-    const currentSummary = calculateSummary(updatedTests);
+    // 2. OPTIMISTIC UPDATE: Update records in state immediately so Recap Table always retains all students
+    setRecords((prev) => {
+      const idx = prev.findIndex((r) => r.id === recordToSave.id || isSameStudent(r.student, recordToSave.student));
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = recordToSave;
+        return next;
+      }
+      return [recordToSave, ...prev];
+    });
 
-    // 2. AUTO-SAVE TO CLOUD FIRESTORE IN REAL-TIME:
+    // 3. AUTO-SAVE TO CLOUD FIRESTORE IN REAL-TIME:
     // When student has entered their name, immediately sync to Cloud so data is NEVER lost even if tab is closed
     if (student.name.trim()) {
-      const autoRecord: AssessmentRecord = {
-        id: currentRecordId,
-        timestamp: new Date().toISOString(),
-        student: { ...student },
-        tests: updatedTests,
-        totalScore: currentSummary.totalScore,
-        finalScore: currentSummary.finalScore,
-        predicate: currentSummary.predicate,
-        notes: notes.trim(),
-      };
-      saveRecordToFirestore(autoRecord).catch((err) => {
+      saveRecordToFirestore(recordToSave).catch((err) => {
         console.warn('Auto-save sync queued offline:', err);
       });
     }
 
     const testName = FITNESS_TESTS.find((t) => t.id === result.testId)?.shortTitle || 'Tes';
+    const mergedSummary = calculateSummary(recordToSave.tests);
 
-    if (currentSummary.isAllCompleted) {
+    if (mergedSummary.isAllCompleted) {
       setIsSavedInRecap(true);
       sound.playFinish();
       confetti({
@@ -276,11 +303,11 @@ export default function App() {
       });
       showToast(
         '🏆 Semua 6 Tes Selesai & Otomatis Tersimpan!',
-        `Nilai Akhir ${student.name}: ${currentSummary.finalScore.toFixed(2)} (${currentSummary.predicate}). Data aman di Cloud Firestore.`,
+        `Nilai Akhir ${recordToSave.student.name}: ${mergedSummary.finalScore.toFixed(2)} (${mergedSummary.predicate}). Data seluruh siswa sebelumnya aman tersimpan di Rekap Kelas.`,
         'success'
       );
     } else {
-      setIsSavedInRecap(false);
+      setIsSavedInRecap(true);
       showToast(
         `${testName} Selesai & Tersimpan!`,
         `Jumlah: ${result.reps} • Waktu: ${result.timeFormatted} • Nilai: ${result.score} (${result.predicate}) • Tersimpan otomatis`,
@@ -324,6 +351,17 @@ export default function App() {
     setTests(recordToSave.tests);
     setStudent(recordToSave.student);
 
+    // Optimistically update records in state immediately
+    setRecords((prev) => {
+      const idx = prev.findIndex((r) => r.id === recordToSave.id || isSameStudent(r.student, recordToSave.student));
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = recordToSave;
+        return next;
+      }
+      return [recordToSave, ...prev];
+    });
+
     try {
       await saveRecordToFirestore(recordToSave);
       setIsSavedInRecap(true);
@@ -360,8 +398,34 @@ export default function App() {
 
   // Reset to Next Student (PENILAIAN SISWA BERIKUTNYA)
   const handleNextStudent = () => {
+    // 1. If current student has completed tests, ensure they are safely committed first before switching!
+    if (student.name.trim() && (Object.values(tests) as SingleTestResult[]).some((t) => isTestCompleted(t))) {
+      const currentSum = calculateSummary(tests);
+      const rec: AssessmentRecord = {
+        id: currentRecordId,
+        timestamp: new Date().toISOString(),
+        student: { ...student },
+        tests: { ...tests },
+        totalScore: currentSum.totalScore,
+        finalScore: currentSum.finalScore,
+        predicate: currentSum.predicate,
+        notes: notes.trim(),
+      };
+      const mergedRec = mergeWithExistingStudentAssessment(rec, records);
+      saveRecordToFirestore(mergedRec).catch(() => {});
+      setRecords((prev) => {
+        const idx = prev.findIndex((r) => r.id === mergedRec.id || isSameStudent(r.student, mergedRec.student));
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = mergedRec;
+          return next;
+        }
+        return [mergedRec, ...prev];
+      });
+    }
+
     clearActiveDraft();
-    const newId = `rec-${Date.now()}`;
+    const newId = `rec-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     setCurrentRecordId(newId);
     setHasRestoredDraft(false);
 
@@ -382,7 +446,7 @@ export default function App() {
 
     showToast(
       'Sesi Siswa Baru Siap!',
-      'Formulir telah direset. Silakan masukkan data siswa berikutnya.',
+      'Formulir telah disiapkan untuk siswa berikutnya. Data nilai siswa sebelumnya aman tersimpan di Rekap Kelas.',
       'info'
     );
   };
@@ -664,22 +728,8 @@ export default function App() {
               onLoadExistingRecord={handleSelectRecordToView}
               hasRestoredDraft={hasRestoredDraft}
               onResetStudent={() => {
-                if (confirm('Kosongkan formulir identitas dan tes saat ini?')) {
-                  clearActiveDraft();
-                  setCurrentRecordId(`rec-${Date.now()}`);
-                  setHasRestoredDraft(false);
-                  setStudent({
-                    name: '',
-                    studentClass: 'X.1',
-                    attendanceNumber: '',
-                    gender: 'L',
-                    examinerName: DEFAULT_TEACHER_NAME,
-                    testDate: new Date().toISOString().split('T')[0],
-                  });
-                  setIsStudentLocked(false);
-                  setTests(INITIAL_TESTS_STATE);
-                  setNotes('');
-                  setIsSavedInRecap(false);
+                if (confirm('Kosongkan formulir identitas dan mulai siswa baru? Data yang sudah tersimpan di Rekap Kelas tetap aman.')) {
+                  handleNextStudent();
                 }
               }}
               completedTestsCount={summary.completedCount}

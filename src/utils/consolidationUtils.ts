@@ -51,6 +51,7 @@ export function normalizeStudentName(name?: string): string {
 /**
  * Check whether two StudentInfo objects belong to the exact same student.
  * Compares class AND (attendance number OR student name).
+ * Prevents false positives where different students have the same attendance number.
  */
 export function isSameStudent(a: StudentInfo, b: StudentInfo): boolean {
   if (!a || !b) return false;
@@ -66,19 +67,32 @@ export function isSameStudent(a: StudentInfo, b: StudentInfo): boolean {
   const nameA = normalizeStudentName(a.name);
   const nameB = normalizeStudentName(b.name);
 
-  // Match by attendance number if both are present
+  const hasBothNames = nameA.length >= 2 && nameB.length >= 2;
+  const namesMatch = nameA === nameB || nameA.includes(nameB) || nameB.includes(nameA);
+
+  // If both records have distinct names that do NOT match, they CANNOT be the same student,
+  // even if attendance number is the same (e.g. unedited default, typo, or different student).
+  if (hasBothNames && !namesMatch) {
+    return false;
+  }
+
+  // Exact name match in the same class
+  if (hasBothNames && nameA === nameB) {
+    return true;
+  }
+
+  // Name substring match with matching or missing attendance number
+  if (hasBothNames && namesMatch) {
+    if (!absenA || !absenB || absenA === absenB) {
+      return true;
+    }
+  }
+
+  // Match by attendance number ONLY if names are not in conflict
   if (absenA && absenB && absenA === absenB) {
-    return true;
-  }
-
-  // Match by name if both are present and not empty
-  if (nameA && nameB && nameA.length >= 2 && nameA === nameB) {
-    return true;
-  }
-
-  // Fuzzy check: one name is a substring of the other with matching absen or vice versa
-  if (absenA && absenB && absenA === absenB && (nameA.includes(nameB) || nameB.includes(nameA))) {
-    return true;
+    if (!nameA || !nameB || namesMatch) {
+      return true;
+    }
   }
 
   return false;
@@ -245,6 +259,16 @@ export function mergeWithExistingStudentAssessment(
   // Find any existing record for this student
   const matching = existingRecords.find((r) => isSameStudent(r.student, newRecord.student));
   if (!matching) {
+    // CRITICAL: Ensure newRecord does not accidentally reuse an ID belonging to a different student in existingRecords
+    const idUsedByOtherStudent = existingRecords.some(
+      (r) => r.id === newRecord.id && !isSameStudent(r.student, newRecord.student)
+    );
+    if (idUsedByOtherStudent) {
+      return {
+        ...newRecord,
+        id: `rec-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      };
+    }
     return newRecord;
   }
 

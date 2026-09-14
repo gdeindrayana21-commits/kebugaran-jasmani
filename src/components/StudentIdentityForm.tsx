@@ -3,7 +3,7 @@ import { User, School, Hash, Calendar, ShieldCheck, CheckCircle2, AlertCircle, S
 import { StudentInfo, Gender, AssessmentRecord } from '../types';
 import { CLASS_OPTIONS, DEFAULT_TEACHER_NAME } from '../constants/fitnessTests';
 import { sound } from '../utils/soundEffects';
-import { consolidateAssessmentRecords } from '../utils/consolidationUtils';
+import { consolidateAssessmentRecords, isSameStudent } from '../utils/consolidationUtils';
 
 interface StudentIdentityFormProps {
   student: StudentInfo;
@@ -38,16 +38,10 @@ export const StudentIdentityForm: React.FC<StudentIdentityFormProps> = ({
 
   // Find if this student already has assessment records in the database (consolidated across assessors)
   const matchingExistingRecord = useMemo(() => {
-    if (!student.name.trim() || student.name.trim().length < 3 || isLocked) return null;
-    const cleanName = student.name.trim().toLowerCase();
+    if (!student.name.trim() || student.name.trim().length < 2 || isLocked) return null;
     const consolidated = consolidateAssessmentRecords(existingRecords);
-    return consolidated.find(
-      (r) =>
-        r.student.studentClass === student.studentClass &&
-        (r.student.name.toLowerCase() === cleanName ||
-          (student.attendanceNumber && r.student.attendanceNumber === student.attendanceNumber))
-    ) || null;
-  }, [student.name, student.studentClass, student.attendanceNumber, existingRecords, isLocked]);
+    return consolidated.find((r) => isSameStudent(r.student, student)) || null;
+  }, [student, existingRecords, isLocked]);
 
   const handleStartAssessment = (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,8 +58,14 @@ export const StudentIdentityForm: React.FC<StudentIdentityFormProps> = ({
       return;
     }
     setValidationError(null);
-    setIsLocked(true);
-    sound.playStart();
+
+    // If an existing record is found for this student, automatically load and merge their previous scores!
+    if (matchingExistingRecord && onLoadExistingRecord) {
+      onLoadExistingRecord(matchingExistingRecord);
+    } else {
+      setIsLocked(true);
+      sound.playStart();
+    }
   };
 
   return (

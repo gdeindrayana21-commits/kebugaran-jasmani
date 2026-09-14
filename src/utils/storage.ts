@@ -96,6 +96,7 @@ export function saveRecords(records: AssessmentRecord[]) {
 /**
  * Merge cloud records with local records intelligently:
  * Keeps whichever version is newer and never deletes local records that aren't yet on cloud.
+ * Also preserves any completed tests across sync so scores are never wiped.
  */
 export function mergeAssessmentRecords(
   cloudRecords: AssessmentRecord[],
@@ -110,7 +111,7 @@ export function mergeAssessmentRecords(
     }
   }
 
-  // Merge cloud records: if cloud record exists, replace unless local has a newer timestamp
+  // Merge cloud records: if cloud record exists, combine completed tests
   for (const rec of cloudRecords) {
     if (!rec || !rec.id) continue;
     const existing = map.get(rec.id);
@@ -119,9 +120,24 @@ export function mergeAssessmentRecords(
     } else {
       const existingTime = new Date(existing.timestamp || 0).getTime();
       const cloudTime = new Date(rec.timestamp || 0).getTime();
-      if (cloudTime >= existingTime) {
-        map.set(rec.id, rec);
+      
+      // Merge test results between cloud and local so no completed tests are lost
+      const mergedTests = { ...(existing.tests || {}), ...(rec.tests || {}) };
+      for (const tKey of Object.keys(existing.tests || {})) {
+        const testId = tKey as FitnessTestType;
+        const existTest = existing.tests?.[testId];
+        const cloudTest = rec.tests?.[testId];
+        // If local test is completed and cloud is not, preserve local
+        if (existTest && existTest.status === 'selesai' && (!cloudTest || cloudTest.status !== 'selesai')) {
+          mergedTests[testId] = existTest;
+        }
       }
+
+      const baseRecord = cloudTime >= existingTime ? rec : existing;
+      map.set(rec.id, {
+        ...baseRecord,
+        tests: mergedTests as Record<FitnessTestType, SingleTestResult>,
+      });
     }
   }
 
