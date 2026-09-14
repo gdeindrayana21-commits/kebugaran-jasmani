@@ -4,7 +4,11 @@ import {
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { AssessmentRecord, ScoreBenchmarksConfig } from '../types';
-import { getSavedRecords, saveRecords, getSavedBenchmarks, saveBenchmarks } from './storage';
+import { 
+  getSavedRecords, saveRecords, getSavedBenchmarks, saveBenchmarks, 
+  mergeAssessmentRecords, getPendingSyncRecords, addPendingSyncRecord, 
+  removePendingSyncRecord, savePendingSyncRecords 
+} from './storage';
 import { getDefaultBenchmarksConfig } from './scoreCalculator';
 
 const RECORDS_COLLECTION = 'assessment_records';
@@ -12,8 +16,41 @@ const BENCHMARKS_COLLECTION = 'benchmarks_config';
 const BENCHMARKS_DOC_ID = 'sma1_tejakula_default';
 
 /**
+ * Flush any locally stored records that could not be saved to Firestore due to offline network
+ */
+export async function flushPendingSyncQueue(): Promise<number> {
+  const pending = getPendingSyncRecords();
+  if (pending.length === 0) return 0;
+
+  let syncedCount = 0;
+  for (const record of pending) {
+    try {
+      const docRef = doc(db, RECORDS_COLLECTION, record.id);
+      await setDoc(docRef, {
+        ...record,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+      removePendingSyncRecord(record.id);
+      syncedCount++;
+    } catch (err) {
+      console.warn(`Retry syncing pending record ${record.id} failed, will retry next time:`, err);
+    }
+  }
+  return syncedCount;
+}
+
+// Auto-sync when device comes back online
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    console.log('Network back online: flushing pending assessment records to Firestore...');
+    flushPendingSyncQueue().catch(() => {});
+  });
+}
+
+/**
  * Real-time listener for all student assessment records
  * Subscribes using onSnapshot to automatically stream updates when any student or teacher edits data.
+ * Merges cloud records with local records to ensure zero data loss on spotty connections.
  */
 export function subscribeToRecords(
   onUpdate: (records: AssessmentRecord[]) => void,
@@ -22,6 +59,12 @@ export function subscribeToRecords(
   try {
     const recordsCol = collection(db, RECORDS_COLLECTION);
     const q = query(recordsCol);
+
+    // Initial check on local records
+    const initialLocal = getSavedRecords();
+    if (initialLocal.length > 0) {
+      onUpdate(initialLocal);
+    }
 
     const unsubscribe = onSnapshot(
       q,
@@ -41,18 +84,22 @@ export function subscribeToRecords(
             } as AssessmentRecord;
           });
 
-          // Sort by timestamp descending
-          cloudRecords.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          // Smart merge with local records so unsynced or newly saved local records are never erased
+          const local = getSavedRecords();
+          const merged = mergeAssessmentRecords(cloudRecords, local);
 
-          // Backup to local storage for offline resilience
-          saveRecords(cloudRecords);
-          onUpdate(cloudRecords);
+          // Save merged to local storage
+          saveRecords(merged);
+          onUpdate(merged);
+
+          // Check if any local records need to be pushed up to Firestore (offline sync)
+          flushPendingSyncQueue().catch(() => {});
         } else {
           // If Firestore is completely empty on initial setup, seed local cache to cloud
           const local = getSavedRecords();
           if (local.length > 0) {
             onUpdate(local);
-            // Upload initial sample records to cloud in background
+            // Upload initial records to cloud in background
             local.forEach((rec) => {
               saveRecordToFirestore(rec).catch(() => {});
             });
@@ -80,12 +127,29 @@ export function subscribeToRecords(
 
 /**
  * Save / Update an assessment record in real-time Firestore database
+ * Immediately updates local state & pending queue first, then commits to Firestore.
  */
 export async function saveRecordToFirestore(record: AssessmentRecord): Promise<void> {
   // Ensure record has a clean ID
   const docId = record.id || `rec-${Date.now()}`;
   const recordWithId = { ...record, id: docId };
 
+  // 1. Immediately update local cache for zero-latency UI and local safety
+  const current = getSavedRecords();
+  const idx = current.findIndex((r) => r.id === docId);
+  let updated: AssessmentRecord[];
+  if (idx >= 0) {
+    updated = [...current];
+    updated[idx] = recordWithId;
+  } else {
+    updated = [recordWithId, ...current];
+  }
+  saveRecords(updated);
+
+  // 2. Add to pending sync queue in case network drops or browser unloads
+  addPendingSyncRecord(recordWithId);
+
+  // 3. Write to Firestore
   try {
     const docRef = doc(db, RECORDS_COLLECTION, docId);
     await setDoc(docRef, {
@@ -93,30 +157,11 @@ export async function saveRecordToFirestore(record: AssessmentRecord): Promise<v
       updatedAt: new Date().toISOString(),
     }, { merge: true });
 
-    // Also update local cache immediately for zero-latency response
-    const current = getSavedRecords();
-    const idx = current.findIndex((r) => r.id === docId);
-    let updated: AssessmentRecord[];
-    if (idx >= 0) {
-      updated = [...current];
-      updated[idx] = recordWithId;
-    } else {
-      updated = [recordWithId, ...current];
-    }
-    saveRecords(updated);
+    // Successfully saved to cloud, remove from pending sync queue
+    removePendingSyncRecord(docId);
   } catch (err) {
-    console.error('Firestore save failed, persisting locally:', err);
-    // Offline resilience: save locally
-    const current = getSavedRecords();
-    const idx = current.findIndex((r) => r.id === docId);
-    let updated: AssessmentRecord[];
-    if (idx >= 0) {
-      updated = [...current];
-      updated[idx] = recordWithId;
-    } else {
-      updated = [recordWithId, ...current];
-    }
-    saveRecords(updated);
+    console.warn('Firestore write delayed/offline, record preserved locally in sync queue:', err);
+    // Keep in pending sync queue for auto-retry
     throw err;
   }
 }

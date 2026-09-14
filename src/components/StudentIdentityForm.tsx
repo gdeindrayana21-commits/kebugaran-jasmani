@@ -1,6 +1,6 @@
-import React from 'react';
-import { User, School, Hash, Calendar, ShieldCheck, CheckCircle2, AlertCircle, Sparkles, RefreshCw, Smartphone } from 'lucide-react';
-import { StudentInfo, Gender } from '../types';
+import React, { useMemo } from 'react';
+import { User, School, Hash, Calendar, ShieldCheck, CheckCircle2, AlertCircle, Sparkles, RefreshCw, Smartphone, History, ArrowRight } from 'lucide-react';
+import { StudentInfo, Gender, AssessmentRecord } from '../types';
 import { CLASS_OPTIONS, DEFAULT_TEACHER_NAME } from '../constants/fitnessTests';
 import { sound } from '../utils/soundEffects';
 
@@ -12,6 +12,9 @@ interface StudentIdentityFormProps {
   onResetStudent: () => void;
   completedTestsCount: number;
   userRole?: 'guru' | 'murid';
+  existingRecords?: AssessmentRecord[];
+  onLoadExistingRecord?: (record: AssessmentRecord) => void;
+  hasRestoredDraft?: boolean;
 }
 
 export const StudentIdentityForm: React.FC<StudentIdentityFormProps> = ({
@@ -22,11 +25,26 @@ export const StudentIdentityForm: React.FC<StudentIdentityFormProps> = ({
   onResetStudent,
   completedTestsCount,
   userRole = 'guru',
+  existingRecords = [],
+  onLoadExistingRecord,
+  hasRestoredDraft = false,
 }) => {
   const isNameFilled = student.name.trim().length > 0;
   const isClassFilled = student.studentClass.trim().length > 0;
   const isAbsenFilled = student.attendanceNumber.trim().length > 0;
   const isFormValid = isNameFilled && isClassFilled && isAbsenFilled;
+
+  // Find if this student already has assessment records in the database
+  const matchingExistingRecord = useMemo(() => {
+    if (!student.name.trim() || student.name.trim().length < 3 || isLocked) return null;
+    const cleanName = student.name.trim().toLowerCase();
+    return existingRecords.find(
+      (r) =>
+        r.student.studentClass === student.studentClass &&
+        (r.student.name.toLowerCase() === cleanName ||
+          (student.attendanceNumber && r.student.attendanceNumber === student.attendanceNumber))
+    ) || null;
+  }, [student.name, student.studentClass, student.attendanceNumber, existingRecords, isLocked]);
 
   const handleStartAssessment = (e: React.FormEvent) => {
     e.preventDefault();
@@ -70,9 +88,12 @@ export const StudentIdentityForm: React.FC<StudentIdentityFormProps> = ({
                   Wajib Diisi
                 </span>
               )}
+              <span className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30">
+                <ShieldCheck className="w-3 h-3" /> Auto-Save Aktif
+              </span>
             </h2>
             <p className="text-[11px] sm:text-xs text-slate-400">
-              Isi data lengkap peserta didik sebelum memulai pencatatan 6 tes kebugaran
+              Isi data lengkap peserta didik. Setiap gerakan dan nilai tersimpan otomatis agar tidak hilang jika keluar aplikasi.
             </p>
           </div>
         </div>
@@ -121,6 +142,26 @@ export const StudentIdentityForm: React.FC<StudentIdentityFormProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Alert if this student has an existing saved record in database */}
+      {matchingExistingRecord && onLoadExistingRecord && !isLocked && (
+        <div className="mb-4 p-3 rounded-xl bg-cyan-950/40 border border-cyan-500/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5 text-xs text-cyan-200">
+          <div className="flex items-center gap-2">
+            <History className="w-4 h-4 text-cyan-400 flex-shrink-0" />
+            <span>
+              Ditemukan data penilaian atas nama <strong>{matchingExistingRecord.student.name}</strong> ({matchingExistingRecord.student.studentClass}, Absen {matchingExistingRecord.student.attendanceNumber}).
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => onLoadExistingRecord(matchingExistingRecord)}
+            className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition flex-shrink-0"
+          >
+            <span>Lanjutkan Data Ini</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Form Fields Grid */}
       <form onSubmit={handleStartAssessment} className="space-y-4">
@@ -303,6 +344,9 @@ export const StudentIdentityForm: React.FC<StudentIdentityFormProps> = ({
               <span className="px-2 py-0.5 rounded bg-slate-800 font-semibold text-cyan-300">Kelas {student.studentClass}</span>
               <span className="text-slate-400">Absen: <strong className="text-white">{student.attendanceNumber}</strong></span>
               <span className="text-slate-400">({student.gender === 'L' ? 'Laki-laki' : 'Perempuan'})</span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                <CheckCircle2 className="w-3 h-3" /> Auto-Save Aktif
+              </span>
             </div>
 
             <div className="flex items-center justify-between sm:justify-end gap-3 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-800">

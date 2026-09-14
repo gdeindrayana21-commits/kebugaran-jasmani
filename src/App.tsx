@@ -8,7 +8,8 @@ import {
 } from './constants/fitnessTests';
 import { 
   getSavedRecords, saveRecords, getSavedBenchmarks, 
-  saveBenchmarks, getSavedTeacherName 
+  saveBenchmarks, getSavedTeacherName, getActiveDraft,
+  saveActiveDraft, clearActiveDraft 
 } from './utils/storage';
 import { calculateSummary } from './utils/scoreCalculator';
 import { exportSingleRecordToExcel, exportRecordsToExcel } from './utils/exportUtils';
@@ -32,7 +33,7 @@ import { TeacherGuide } from './components/TeacherGuide';
 import { 
   Sparkles, CheckCircle2, AlertTriangle, Users, 
   RotateCcw, Award, ChevronRight, Activity, BookOpen, Layers,
-  Settings, Wifi, WifiOff
+  Settings, Wifi, WifiOff, ShieldCheck
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -56,20 +57,45 @@ export default function App() {
   const [isRealtimeConnected, setIsRealtimeConnected] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Student Identity Form State
-  const [student, setStudent] = useState<StudentInfo>({
-    name: '',
-    studentClass: 'X.1',
-    attendanceNumber: '',
-    gender: 'L',
-    examinerName: getSavedTeacherName(),
-    testDate: new Date().toISOString().split('T')[0],
+  // Check for existing active draft to restore if student or teacher exited earlier
+  const initialDraft = getActiveDraft();
+  const [hasRestoredDraft, setHasRestoredDraft] = useState<boolean>(() => {
+    return !!(
+      initialDraft &&
+      (initialDraft.student?.name?.trim() ||
+        (Object.values(initialDraft.tests || {}) as SingleTestResult[]).some((t) => t.status === 'selesai'))
+    );
   });
-  const [isStudentLocked, setIsStudentLocked] = useState(false);
+
+  const [currentRecordId, setCurrentRecordId] = useState<string>(() => {
+    return initialDraft?.recordId || `rec-${Date.now()}`;
+  });
+
+  // Student Identity Form State (restored from draft if available)
+  const [student, setStudent] = useState<StudentInfo>(() => {
+    if (initialDraft && initialDraft.student && initialDraft.student.name) {
+      return initialDraft.student;
+    }
+    return {
+      name: '',
+      studentClass: 'X.1',
+      attendanceNumber: '',
+      gender: 'L',
+      examinerName: getSavedTeacherName(),
+      testDate: new Date().toISOString().split('T')[0],
+    };
+  });
+  const [isStudentLocked, setIsStudentLocked] = useState<boolean>(() => {
+    return initialDraft ? initialDraft.isLocked : false;
+  });
 
   // 6 Test Results State for currently evaluated student
-  const [tests, setTests] = useState<Record<FitnessTestType, SingleTestResult>>(INITIAL_TESTS_STATE);
-  const [notes, setNotes] = useState<string>('');
+  const [tests, setTests] = useState<Record<FitnessTestType, SingleTestResult>>(() => {
+    return initialDraft?.tests || INITIAL_TESTS_STATE;
+  });
+  const [notes, setNotes] = useState<string>(() => {
+    return initialDraft?.notes || '';
+  });
   const [isSavedInRecap, setIsSavedInRecap] = useState<boolean>(false);
   const [isSavingRecord, setIsSavingRecord] = useState<boolean>(false);
 
@@ -90,6 +116,78 @@ export default function App() {
     setToastMessage({ title, desc, type });
     setTimeout(() => setToastMessage(null), 3500);
   };
+
+  // Auto-save draft to local storage whenever student, test progress, or notes change
+  useEffect(() => {
+    const hasAnyData = student.name.trim().length > 0 || (Object.values(tests) as SingleTestResult[]).some((t) => t.status === 'selesai');
+    if (hasAnyData) {
+      saveActiveDraft({
+        recordId: currentRecordId,
+        student,
+        tests,
+        notes,
+        isLocked: isStudentLocked,
+        lastUpdated: new Date().toISOString(),
+      });
+    }
+  }, [student, tests, notes, isStudentLocked, currentRecordId]);
+
+  // Event listeners for page hide / tab close / sleep to ensure complete persistence
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      const hasUnsavedProgress = student.name.trim().length > 0 && (Object.values(tests) as SingleTestResult[]).some((t) => t.status === 'selesai') && !isSavedInRecap;
+      if (hasUnsavedProgress) {
+        saveActiveDraft({
+          recordId: currentRecordId,
+          student,
+          tests,
+          notes,
+          isLocked: isStudentLocked,
+          lastUpdated: new Date().toISOString(),
+        });
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && student.name.trim().length > 0) {
+        saveActiveDraft({
+          recordId: currentRecordId,
+          student,
+          tests,
+          notes,
+          isLocked: isStudentLocked,
+          lastUpdated: new Date().toISOString(),
+        });
+
+        // Also auto-sync to Firestore if at least 1 test is completed
+        const currentSummary = calculateSummary(tests);
+        if (currentSummary.completedCount > 0) {
+          const autoRecord: AssessmentRecord = {
+            id: currentRecordId,
+            timestamp: new Date().toISOString(),
+            student: { ...student },
+            tests: { ...tests },
+            totalScore: currentSummary.totalScore,
+            finalScore: currentSummary.finalScore,
+            predicate: currentSummary.predicate,
+            notes: notes.trim(),
+          };
+          saveRecordToFirestore(autoRecord).catch(() => {});
+        }
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [student, tests, notes, isStudentLocked, currentRecordId, isSavedInRecap]);
 
   // Real-time Firestore Subscriptions
   useEffect(() => {
@@ -126,20 +224,67 @@ export default function App() {
     };
   }, []);
 
-  // Save single test result from Modal
+  // Save single test result from Modal with immediate Real-Time Auto-Save
   const handleSaveSingleTest = (result: SingleTestResult) => {
-    setTests((prev) => ({
-      ...prev,
+    const updatedTests = {
+      ...tests,
       [result.testId]: result,
-    }));
-    setIsSavedInRecap(false);
+    };
+    setTests(updatedTests);
+
+    // 1. Immediately persist active draft to local storage
+    saveActiveDraft({
+      recordId: currentRecordId,
+      student,
+      tests: updatedTests,
+      notes,
+      isLocked: isStudentLocked,
+      lastUpdated: new Date().toISOString(),
+    });
+
+    const currentSummary = calculateSummary(updatedTests);
+
+    // 2. AUTO-SAVE TO CLOUD FIRESTORE IN REAL-TIME:
+    // When student has entered their name, immediately sync to Cloud so data is NEVER lost even if tab is closed
+    if (student.name.trim()) {
+      const autoRecord: AssessmentRecord = {
+        id: currentRecordId,
+        timestamp: new Date().toISOString(),
+        student: { ...student },
+        tests: updatedTests,
+        totalScore: currentSummary.totalScore,
+        finalScore: currentSummary.finalScore,
+        predicate: currentSummary.predicate,
+        notes: notes.trim(),
+      };
+      saveRecordToFirestore(autoRecord).catch((err) => {
+        console.warn('Auto-save sync queued offline:', err);
+      });
+    }
 
     const testName = FITNESS_TESTS.find((t) => t.id === result.testId)?.shortTitle || 'Tes';
-    showToast(
-      `${testName} Selesai!`,
-      `Jumlah: ${result.reps} • Waktu: ${result.timeFormatted} • Nilai: ${result.score} (${result.predicate})`,
-      'success'
-    );
+
+    if (currentSummary.isAllCompleted) {
+      setIsSavedInRecap(true);
+      sound.playFinish();
+      confetti({
+        particleCount: 80,
+        spread: 70,
+        origin: { y: 0.6 },
+      });
+      showToast(
+        '🏆 Semua 6 Tes Selesai & Otomatis Tersimpan!',
+        `Nilai Akhir ${student.name}: ${currentSummary.finalScore.toFixed(2)} (${currentSummary.predicate}). Data aman di Cloud Firestore.`,
+        'success'
+      );
+    } else {
+      setIsSavedInRecap(false);
+      showToast(
+        `${testName} Selesai & Tersimpan!`,
+        `Jumlah: ${result.reps} • Waktu: ${result.timeFormatted} • Nilai: ${result.score} (${result.predicate}) • Tersimpan otomatis`,
+        'success'
+      );
+    }
   };
 
   // Check if student identity is sufficiently ready
@@ -156,9 +301,8 @@ export default function App() {
     }
 
     setIsSavingRecord(true);
-    const newRecordId = `rec-${Date.now()}`;
-    const newRecord: AssessmentRecord = {
-      id: newRecordId,
+    const recordToSave: AssessmentRecord = {
+      id: currentRecordId,
       timestamp: new Date().toISOString(),
       student: { ...student },
       tests: { ...tests },
@@ -169,7 +313,7 @@ export default function App() {
     };
 
     try {
-      await saveRecordToFirestore(newRecord);
+      await saveRecordToFirestore(recordToSave);
       setIsSavedInRecap(true);
       sound.playFinish();
 
@@ -199,11 +343,10 @@ export default function App() {
 
   // Reset to Next Student (PENILAIAN SISWA BERIKUTNYA)
   const handleNextStudent = () => {
-    if (summary.completedCount > 0 && !isSavedInRecap) {
-      if (!confirm('Hasil siswa saat ini belum disimpan ke database. Lanjutkan ke siswa berikutnya?')) {
-        return;
-      }
-    }
+    clearActiveDraft();
+    const newId = `rec-${Date.now()}`;
+    setCurrentRecordId(newId);
+    setHasRestoredDraft(false);
 
     setStudent({
       name: '',
@@ -273,11 +416,13 @@ export default function App() {
 
   // View existing record from recap into active assessment form
   const handleSelectRecordToView = (record: AssessmentRecord) => {
+    setCurrentRecordId(record.id);
     setStudent(record.student);
     setIsStudentLocked(true);
     setTests(record.tests);
     setNotes(record.notes || '');
     setIsSavedInRecap(true);
+    setHasRestoredDraft(false);
     setActiveTab('assessment');
     showToast('Data Dimuat', `Menampilkan data penilaian ${record.student.name}`, 'info');
   };
@@ -351,6 +496,48 @@ export default function App() {
         {activeTab === 'assessment' && (
           <div className="space-y-4 sm:space-y-6">
             
+            {/* Sesi Pemulihan Draft Otomatis jika siswa keluar browser sebelumnya */}
+            {hasRestoredDraft && student.name && (
+              <div className="p-3.5 sm:p-4 rounded-2xl bg-gradient-to-r from-emerald-950/80 via-slate-900 to-emerald-950/80 border border-emerald-500/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs shadow-xl backdrop-blur-md">
+                <div className="flex items-center gap-3 text-emerald-200">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 flex-shrink-0">
+                    <ShieldCheck className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <p className="font-black text-white text-xs sm:text-sm flex items-center gap-2">
+                      <span>Sesi Penilaian Aktif Dipulihkan!</span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/20 text-emerald-300 font-bold">
+                        Anti Hilang
+                      </span>
+                    </p>
+                    <p className="text-[11px] text-emerald-300/90 mt-0.5">
+                      Melanjutkan data <strong className="text-white">{student.name}</strong> (Kelas {student.studentClass}, Absen {student.attendanceNumber || '-'}) • <strong className="text-emerald-400">{summary.completedCount} dari 6 tes tersimpan</strong>. Nilai aman di browser dan database.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setHasRestoredDraft(false)}
+                    className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition cursor-pointer shadow-md shadow-emerald-950/50"
+                  >
+                    Lanjutkan Penilaian
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (confirm('Mulai sesi siswa baru dan hapus sesi yang sedang aktif ini?')) {
+                        handleNextStudent();
+                      }
+                    }}
+                    className="px-2.5 py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-700 border border-slate-700 transition cursor-pointer"
+                  >
+                    Siswa Baru
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Step 1: Student Identity Form */}
             <StudentIdentityForm
               student={student}
@@ -358,8 +545,14 @@ export default function App() {
               isLocked={isStudentLocked}
               setIsLocked={setIsStudentLocked}
               userRole={userRole}
+              existingRecords={records}
+              onLoadExistingRecord={handleSelectRecordToView}
+              hasRestoredDraft={hasRestoredDraft}
               onResetStudent={() => {
-                if (confirm('Kosongkan formulir identitas siswa?')) {
+                if (confirm('Kosongkan formulir identitas dan tes saat ini?')) {
+                  clearActiveDraft();
+                  setCurrentRecordId(`rec-${Date.now()}`);
+                  setHasRestoredDraft(false);
                   setStudent({
                     name: '',
                     studentClass: 'X.1',
@@ -370,6 +563,8 @@ export default function App() {
                   });
                   setIsStudentLocked(false);
                   setTests(INITIAL_TESTS_STATE);
+                  setNotes('');
+                  setIsSavedInRecap(false);
                 }
               }}
               completedTestsCount={summary.completedCount}
